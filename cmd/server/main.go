@@ -20,7 +20,7 @@ func getMetrics(storage *MemStorage) http.HandlerFunc {
 			return
 		}
 		// установим правильный заголовок для типа данных
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", "text/plain")
 		// r.HeadersRegexp("Content-Type", "application/(text|json)")
 
 		// считываем переменные из url

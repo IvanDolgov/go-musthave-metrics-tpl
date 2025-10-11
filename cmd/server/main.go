@@ -27,7 +27,7 @@ func getMetrics(storage *MemStorage) http.HandlerFunc {
 		vars := mux.Vars(req)
 		metricType := vars["type_metric"]
 		name := vars["metric"]
-		value_metric := vars["value_metric"]
+		valueMetric := vars["value_metric"]
 		// fmt.Println(name)
 
 		// разбираем метрики по типы
@@ -35,7 +35,7 @@ func getMetrics(storage *MemStorage) http.HandlerFunc {
 		case "gauge":
 			// fmt.Println("Type gauge")
 			// strconv позволяет проверть тип
-			value, err := strconv.ParseFloat(value_metric, 64)
+			value, err := strconv.ParseFloat(valueMetric, 64)
 			if err != nil {
 				http.Error(w, "Invalid gauge value", http.StatusBadRequest)
 				// w.WriteHeader(http.StatusBadRequest)
@@ -47,7 +47,7 @@ func getMetrics(storage *MemStorage) http.HandlerFunc {
 		case "counter":
 			// fmt.Println("Type counter")
 			// strconv позволяет проверть тип
-			value, err := strconv.ParseInt(value_metric, 10, 64)
+			value, err := strconv.ParseInt(valueMetric, 10, 64)
 			if err != nil {
 				http.Error(w, "Invalid counter value", http.StatusBadRequest)
 				// w.WriteHeader(http.StatusBadRequest)

@@ -32,12 +32,10 @@ func (m *MockRandSource) Float64() float64 {
 
 // TestRandomValueGeneration тестирует генерацию случайных значений
 func TestRandomValueGeneration(t *testing.T) {
-	// Вместо мока, тестируем логику вычисления значения
+	// Тестируем логику вычисления случайного значения
 	testValue := 0.75
-	expectedValue := testValue * 100
-
-	// Тестируем ту же логику, что используется в main
 	calculatedValue := testValue * 100
+	expectedValue := 75.0
 
 	if calculatedValue != expectedValue {
 		t.Errorf("Expected calculated value %f, got %f", expectedValue, calculatedValue)
@@ -231,18 +229,26 @@ func TestIntervals(t *testing.T) {
 	}
 }
 
-// TestSignalHandling тестирует обработку сигналов (косвенно)
+// TestSignalHandling тестирует обработку сигналов
 func TestSignalHandling(t *testing.T) {
-	// Этот тест проверяет, что канал сигналов создается корректно
+	// Тестируем создание канала для сигналов
 	stop := make(chan os.Signal, 1)
 
-	if stop == nil {
-		t.Error("Signal channel should not be nil")
+	// Проверяем емкость канала
+	if cap(stop) != 1 {
+		t.Errorf("Expected channel capacity 1, got %d", cap(stop))
 	}
 
-	if cap(stop) != 1 {
-		t.Error("Signal channel should have capacity 1")
+	// Проверяем, что канал не закрыт
+	select {
+	case <-stop:
+		t.Error("Channel should not be closed or have values initially")
+	default:
+		// Это нормально - канал пустой
 	}
+
+	// Закрываем канал для очистки
+	close(stop)
 }
 
 // TestMetricKindHandling тестирует обработку различных типов метрик

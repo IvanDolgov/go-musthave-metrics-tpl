@@ -40,7 +40,7 @@ func sendMetrics(storage *MemStorage) http.HandlerFunc {
 				message = fmt.Sprintf("%s: %d", name, valueMetric)
 			} else {
 				// Для gauge выводим как число с плавающей точкой
-				message = fmt.Sprintf("%s: %f", name, valueMetric)
+				message = fmt.Sprintf("%s: %g", name, valueMetric)
 			}
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(message))

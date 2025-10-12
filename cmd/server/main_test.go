@@ -96,13 +96,13 @@ func TestSendMetrics(t *testing.T) {
 			name:           "Existing gauge metric",
 			url:            "/value/gauge/temperature",
 			expectedStatus: http.StatusOK,
-			expectedBody:   "temperature: 25.5",
+			expectedBody:   "25.5",
 		},
 		{
 			name:           "Existing counter metric",
 			url:            "/value/counter/requests",
 			expectedStatus: http.StatusOK,
-			expectedBody:   "requests: 10", // Теперь ожидаем целое число
+			expectedBody:   "10", // Теперь ожидаем целое число
 		},
 		{
 			name:           "Non-existing gauge metric",

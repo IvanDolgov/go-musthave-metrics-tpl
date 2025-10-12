@@ -37,10 +37,12 @@ func sendMetrics(storage *MemStorage) http.HandlerFunc {
 			var message string
 			if metricType == "counter" {
 				// Для counter выводим как целое число
-				message = fmt.Sprintf("%s: %d", name, valueMetric)
+				// message = fmt.Sprintf("%s: %d", name, valueMetric)
+				message = fmt.Sprintf("%d", valueMetric)
 			} else {
 				// Для gauge выводим как число с плавающей точкой
-				message = fmt.Sprintf("%s: %g", name, valueMetric)
+				// message = fmt.Sprintf("%s: %g", name, valueMetric)
+				message = fmt.Sprintf("%g", valueMetric)
 			}
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(message))

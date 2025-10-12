@@ -57,3 +57,27 @@ func (m *MemStorage) IncrementCounter(name string, delta int64) {
 func (m *MemStorage) GetAllMetrics() (map[string]float64, map[string]int64) {
 	return m.gauges, m.counters
 }
+
+// GetMetric возвращает метрику по имени и типу
+// Возвращает значение в виде interface{} и флаг существования метрики
+func (m *MemStorage) GetMetric(name string, metricType MetricType) (interface{}, bool) {
+	switch metricType {
+	case Gauge:
+		value, exists := m.gauges[name]
+		// если нет метрики то возвращаем nil
+		if !exists {
+			return nil, false
+		}
+		return value, true
+	case Counter:
+		value, exists := m.counters[name]
+		// если нет метрики то возвращаем nil
+		if !exists {
+			return nil, false
+		}
+		return value, true
+	// если нет типа метрики то возвращаем nil
+	default:
+		return nil, false
+	}
+}

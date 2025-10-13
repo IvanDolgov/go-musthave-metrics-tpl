@@ -1,8 +1,10 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -138,7 +140,60 @@ func getMetrics(storage *MemStorage) http.HandlerFunc {
 	}
 }
 
+// задаем переменные для работы с flag
+var (
+	address string
+	server  string
+	port    string
+)
+
+func parseFlags() {
+	// Флаг в формате server:port
+	flag.StringVar(&address, "a", "example.com:8080", "server address (short)")
+
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Supported flags:\n")
+		flag.PrintDefaults()
+		os.Exit(1)
+	}
+
+	flag.Parse()
+
+	// Самый простой способ - проверяем есть ли дополнительные аргументы
+	if len(flag.Args()) > 0 {
+		fmt.Fprintf(os.Stderr, "Error: unknown arguments: %v\n", flag.Args())
+		flag.Usage()
+	}
+
+	// Парсим адрес на server и port
+	parts := strings.Split(address, ":")
+	if len(parts) == 2 {
+		server = parts[0]
+		port = parts[1]
+	} else {
+		server = parts[0]
+		port = "8080" // порт по умолчанию
+	}
+}
+
+func buildServerAddress(server, port string) string {
+	if strings.TrimSpace(server) == "" {
+		return ":" + port
+	}
+	return server + ":" + port
+}
+
 func main() {
+	// считываем аргументы из аргументов
+	parseFlags()
+
+	// fmt.Printf("Server: %s\n", server)
+	// fmt.Printf("Port: %s\n", port)
+	// fmt.Printf("Full address: %s:%s\n", server, port)
+	// создаем строку с сервером или без
+	fullPathServer := buildServerAddress(server, port)
+
 	storage := NewMemStorage()
 	router := chi.NewRouter()
 
@@ -165,7 +220,7 @@ func main() {
 
 	// router.HandleFunc(`/`, summuryMetrics(storage))
 
-	err := http.ListenAndServe(`:8080`, router)
+	err := http.ListenAndServe(fullPathServer, router)
 	if err != nil {
 		panic(err)
 	}

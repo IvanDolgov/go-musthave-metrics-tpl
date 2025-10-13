@@ -1,21 +1,76 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
 	"runtime/metrics"
+	"strings"
 	"syscall"
 	"time"
 )
+
+// задаем переменные для работы с flag
+var (
+	address        string
+	server         string
+	port           string
+	pollInterval   int
+	reportInterval int
+)
+
+func parseFlags() {
+	// Флаг в формате server:port
+	flag.StringVar(&address, "a", "localhost:8080", "server address (short)")
+	// интервал обновления
+	flag.IntVar(&pollInterval, "r", 2, "update interval(sec)")
+	// интервал отправки на сервер
+	flag.IntVar(&reportInterval, "p", 10, "push metrics interval(sec)")
+
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Supported flags:\n")
+		flag.PrintDefaults()
+		os.Exit(1)
+	}
+
+	flag.Parse()
+
+	// Самый простой способ - проверяем есть ли дополнительные аргументы
+	if len(flag.Args()) > 0 {
+		fmt.Fprintf(os.Stderr, "Error: unknown arguments: %v\n", flag.Args())
+		flag.Usage()
+	}
+
+	// Парсим адрес на server и port
+	parts := strings.Split(address, ":")
+	if len(parts) == 2 {
+		server = parts[0]
+		port = parts[1]
+	} else {
+		server = parts[0]
+		port = "8080" // порт по умолчанию
+	}
+}
+
+func buildServerAddress(server, port string) string {
+	if strings.TrimSpace(server) == "" {
+		return ":" + port
+	}
+	return server + ":" + port
+}
 
 func main() {
 	// Канал для сигналов завершения
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	fmt.Println("Программа запущена. Нажмите Ctrl+C для остановки")
+
+	// считываем аргументы из аргументов
+	parseFlags()
 
 	// структура для описания метрик
 	type MetricWithName struct {
@@ -138,8 +193,9 @@ func main() {
 
 func sendMetric(metricType string, name string, value interface{}) {
 	// Формируем URL с параметрами
-	endpoint := fmt.Sprintf("http://localhost:8080/update/%s/%s/%v",
-		metricType, name, value)
+	fullPathServer := buildServerAddress(server, port)
+	endpoint := fmt.Sprintf("http://%s/update/%s/%s/%v",
+		fullPathServer, metricType, name, value)
 
 	// Отправляем POST запрос
 	response, err := http.Post(endpoint, "text/plain", nil)

@@ -149,7 +149,7 @@ var (
 
 func parseFlags() {
 	// Флаг в формате server:port
-	flag.StringVar(&address, "a", "example.com:8080", "server address (short)")
+	flag.StringVar(&address, "a", "localhost:8080", "server address (short)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])

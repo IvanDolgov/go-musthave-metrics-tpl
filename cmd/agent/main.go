@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -13,95 +12,18 @@ import (
 	"time"
 )
 
-// задаем переменные для работы с flag
-var (
-	address        string
-	server         string
-	port           string
-	pollInterval   int
-	reportInterval int
-)
-
-func parseFlags() {
-	// Флаг в формате server:port
-	flag.StringVar(&address, "a", "localhost:8080", "server address (short)")
-	// интервал обновления
-	flag.IntVar(&pollInterval, "r", 2, "update interval(sec)")
-	// интервал отправки на сервер
-	flag.IntVar(&reportInterval, "p", 10, "push metrics interval(sec)")
-
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "Supported flags:\n")
-		flag.PrintDefaults()
-		os.Exit(1)
-	}
-
-	flag.Parse()
-
-	// Самый простой способ - проверяем есть ли дополнительные аргументы
-	if len(flag.Args()) > 0 {
-		fmt.Fprintf(os.Stderr, "Error: unknown arguments: %v\n", flag.Args())
-		flag.Usage()
-	}
-
-	// Парсим адрес на server и port
-	parts := strings.Split(address, ":")
-	if len(parts) == 2 {
-		server = parts[0]
-		port = parts[1]
-	} else {
-		server = parts[0]
-		port = "8080" // порт по умолчанию
-	}
-}
-
-func buildServerAddress(server, port string) string {
-	if strings.TrimSpace(server) == "" {
-		return ":" + port
-	}
-	return server + ":" + port
-}
-
-func main() {
+// run запускает приложение с переданной конфигурацией
+func run(cfg Config) error {
 	// Канал для сигналов завершения
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	fmt.Println("Программа запущена. Нажмите Ctrl+C для остановки")
-
-	// считываем аргументы из аргументов
-	parseFlags()
 
 	// структура для описания метрик
 	type MetricWithName struct {
 		Sample    metrics.Sample
 		ShortName string
 	}
-
-	// // Метрики которые нам нужны
-	// need_metrics := []metrics.Sample{
-	// 	{Name: "/memory/classes/total:bytes"},                 // Alloc
-	// 	{Name: "/memory/classes/profiling/buckets:bytes"},     // BuckHashSys
-	// 	{Name: "/memory/classes/heap/released:bytes"},         // HeapReleased
-	// 	{Name: "/memory/classes/metadata/mspan/inuse:bytes"},  // MSpanInuse
-	// 	{Name: "/memory/classes/metadata/mspan/free:bytes"},   // MSpanSys
-	// 	{Name: "/memory/classes/metadata/mcache/inuse:bytes"}, // MCacheInuse
-	// 	{Name: "/memory/classes/metadata/mcache/free:bytes"},  // MCacheSys
-	// 	{Name: "/memory/classes/os-stacks:bytes"},             // StackInuse
-	// 	{Name: "/memory/classes/other:bytes"},                 // OtherSys
-	// 	{Name: "/memory/classes/total:bytes"},                 // Sys
-	// 	{Name: "/gc/cpu/fraction:gc-cpu-fraction"},            // GCCPUFraction
-	// 	{Name: "/memory/classes/heap/unused:bytes"},           // HeapIdle
-	// 	{Name: "/memory/classes/heap/objects:bytes"},          // HeapInuse
-	// 	{Name: "/gc/heap/goal:bytes"},                         // NextGC
-	// 	{Name: "/gc/pauses:seconds"},                          // PauseTotalNs
-	// 	{Name: "/gc/heap/frees:objects"},                      // Frees
-	// 	{Name: "/gc/heap/objects:objects"},                    // HeapObjects
-	// 	{Name: "/gc/cycles/total:gc-cycles"},                  // NumGC
-	// 	{Name: "/gc/cycles/forced:gc-cycles"},                 // NumForcedGC
-	// 	{Name: "/gc/heap/allocs:objects"},                     // Mallocs
-	// 	{Name: "/gc/heap/allocs:bytes"},                       // TotalAlloc
-	// }
 
 	// список метрик с именами
 	metricsWithNames := []MetricWithName{
@@ -128,11 +50,6 @@ func main() {
 		{metrics.Sample{Name: "/gc/heap/allocs:bytes"}, "TotalAlloc"},
 	}
 
-	// интервал обновления
-	pollInterval := 2
-	// интервал отправки на сервер
-	reportInterval := 10
-
 	// Подсчет количество запусков сбора метрик
 	var metricsReadCounter int
 
@@ -148,7 +65,7 @@ func main() {
 				metrics.Read([]metrics.Sample{metricsWithNames[i].Sample})
 			}
 
-			time.Sleep(time.Duration(pollInterval) * time.Second)
+			time.Sleep(time.Duration(cfg.PollInterval))
 		}
 	}()
 
@@ -169,19 +86,19 @@ func main() {
 
 				}
 				fmt.Printf("%f\n", value)
-				sendMetric("gauge", metric.ShortName, value)
+				sendMetric("gauge", metric.ShortName, value, cfg)
 
 			}
 			// отправляем счетчик
 			fmt.Printf("%s: %d", "PollCount", metricsReadCounter)
-			sendMetric("counter", "PollCount", metricsReadCounter)
+			sendMetric("counter", "PollCount", metricsReadCounter, cfg)
 
 			// отправляем рандомное число
 			RandomValue := rand.Float64() * 100
 			fmt.Printf("%s: %f", "RandomValue", RandomValue)
-			sendMetric("gauge", "RandomValue", RandomValue)
+			sendMetric("gauge", "RandomValue", RandomValue, cfg)
 
-			time.Sleep(time.Duration(reportInterval) * time.Second)
+			time.Sleep(time.Duration(cfg.ReportInterval))
 		}
 	}()
 
@@ -189,11 +106,23 @@ func main() {
 	<-stop
 	fmt.Println("\nЗавершение программы...")
 
+	return nil
 }
 
-func sendMetric(metricType string, name string, value interface{}) {
+func main() {
+	// Получаем конфигурацию
+	cfg := parseFlags()
+
+	// Запускаем приложение
+	if err := run(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Application error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func sendMetric(metricType string, name string, value interface{}, cfg Config) {
 	// Формируем URL с параметрами
-	fullPathServer := buildServerAddress(server, port)
+	fullPathServer := buildServerAddress(cfg.Server, cfg.Port)
 	endpoint := fmt.Sprintf("http://%s/update/%s/%s/%v",
 		fullPathServer, metricType, name, value)
 
@@ -210,4 +139,11 @@ func sendMetric(metricType string, name string, value interface{}) {
 	if response.StatusCode != http.StatusOK {
 		fmt.Printf("Server returned non-OK status: %d\n", response.StatusCode)
 	}
+}
+
+func buildServerAddress(server, port string) string {
+	if strings.TrimSpace(server) == "" {
+		return ":" + port
+	}
+	return server + ":" + port
 }

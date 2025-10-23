@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -375,5 +376,266 @@ func TestMetricCalculation(t *testing.T) {
 				t.Errorf("For input %f expected %f, got %f", tt.input, tt.expected, result)
 			}
 		})
+	}
+}
+
+func TestParseFlags(t *testing.T) {
+	tests := []struct {
+		name               string
+		envAddress         string
+		envPollInterval    string
+		envReportInterval  string
+		flagAddress        string
+		flagPollInterval   string
+		flagReportInterval string
+		wantAddress        string
+		wantPollInterval   time.Duration
+		wantReportInterval time.Duration
+	}{
+		{
+			name:               "default values",
+			wantAddress:        "localhost:8080",
+			wantPollInterval:   2 * time.Second,
+			wantReportInterval: 10 * time.Second,
+		},
+		{
+			name:               "only flags",
+			flagAddress:        "127.0.0.1:9090",
+			flagPollInterval:   "5",
+			flagReportInterval: "15",
+			wantAddress:        "127.0.0.1:9090",
+			wantPollInterval:   5 * time.Second,
+			wantReportInterval: 15 * time.Second,
+		},
+		{
+			name:               "only environment variables",
+			envAddress:         "192.168.1.1:8080",
+			envPollInterval:    "3",
+			envReportInterval:  "20",
+			wantAddress:        "192.168.1.1:8080",
+			wantPollInterval:   3 * time.Second,
+			wantReportInterval: 20 * time.Second,
+		},
+		{
+			name:               "environment overrides flags",
+			envAddress:         "env-host:8080",
+			envPollInterval:    "7",
+			envReportInterval:  "25",
+			flagAddress:        "flag-host:9090",
+			flagPollInterval:   "10",
+			flagReportInterval: "30",
+			wantAddress:        "env-host:8080",
+			wantPollInterval:   7 * time.Second,
+			wantReportInterval: 25 * time.Second,
+		},
+		{
+			name:               "mixed environment and flags",
+			envAddress:         "env-only:8080",
+			flagPollInterval:   "8",
+			flagReportInterval: "18",
+			wantAddress:        "env-only:8080",
+			wantPollInterval:   8 * time.Second,
+			wantReportInterval: 18 * time.Second,
+		},
+		{
+			name:               "invalid environment values fallback to flags",
+			envPollInterval:    "invalid",
+			envReportInterval:  "not-a-number",
+			flagPollInterval:   "12",
+			flagReportInterval: "22",
+			wantAddress:        "localhost:8080",
+			wantPollInterval:   12 * time.Second,
+			wantReportInterval: 22 * time.Second,
+		},
+		{
+			name:               "empty environment values use flags",
+			envAddress:         "",
+			envPollInterval:    "",
+			envReportInterval:  "",
+			flagAddress:        "flag-host:8080",
+			flagPollInterval:   "6",
+			flagReportInterval: "16",
+			wantAddress:        "flag-host:8080",
+			wantPollInterval:   6 * time.Second,
+			wantReportInterval: 16 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Сохраняем оригинальные значения флагов и окружения
+			originalArgs := os.Args
+			originalEnvAddress := os.Getenv("ADDRESS")
+			originalEnvPollInterval := os.Getenv("POLL_INTERVAL")
+			originalEnvReportInterval := os.Getenv("REPORT_INTERVAL")
+
+			// Восстанавливаем состояние после теста
+			defer func() {
+				os.Args = originalArgs
+				os.Setenv("ADDRESS", originalEnvAddress)
+				os.Setenv("POLL_INTERVAL", originalEnvPollInterval)
+				os.Setenv("REPORT_INTERVAL", originalEnvReportInterval)
+				flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+			}()
+
+			// Устанавливаем переменные окружения
+			os.Setenv("ADDRESS", tt.envAddress)
+			os.Setenv("POLL_INTERVAL", tt.envPollInterval)
+			os.Setenv("REPORT_INTERVAL", tt.envReportInterval)
+
+			// Подготавливаем аргументы командной строки
+			os.Args = []string{"test"}
+			if tt.flagAddress != "" {
+				os.Args = append(os.Args, "-a", tt.flagAddress)
+			}
+			if tt.flagPollInterval != "" {
+				os.Args = append(os.Args, "-p", tt.flagPollInterval)
+			}
+			if tt.flagReportInterval != "" {
+				os.Args = append(os.Args, "-r", tt.flagReportInterval)
+			}
+
+			// Сбрасываем флаги для нового теста
+			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+
+			// Вызываем тестируемую функцию
+			config := parseFlags()
+
+			// Проверяем результаты
+			if config.Address != tt.wantAddress {
+				t.Errorf("Address = %v, want %v", config.Address, tt.wantAddress)
+			}
+			if config.PollInterval != tt.wantPollInterval {
+				t.Errorf("PollInterval = %v, want %v", config.PollInterval, tt.wantPollInterval)
+			}
+			if config.ReportInterval != tt.wantReportInterval {
+				t.Errorf("ReportInterval = %v, want %v", config.ReportInterval, tt.wantReportInterval)
+			}
+		})
+	}
+}
+
+func TestParseFlags_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name               string
+		envPollInterval    string
+		envReportInterval  string
+		flagPollInterval   string
+		flagReportInterval string
+		wantPollInterval   time.Duration
+		wantReportInterval time.Duration
+	}{
+		{
+			name:               "zero environment values",
+			envPollInterval:    "0",
+			envReportInterval:  "0",
+			wantPollInterval:   0 * time.Second,
+			wantReportInterval: 0 * time.Second,
+		},
+		{
+			name:               "negative environment values",
+			envPollInterval:    "-5",
+			envReportInterval:  "-10",
+			flagPollInterval:   "2",
+			flagReportInterval: "10",
+			wantPollInterval:   -5 * time.Second,
+			wantReportInterval: -10 * time.Second,
+		},
+		{
+			name:               "large values",
+			envPollInterval:    "300", // 5 minutes
+			envReportInterval:  "600", // 10 minutes
+			wantPollInterval:   300 * time.Second,
+			wantReportInterval: 600 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Сохраняем оригинальные значения
+			originalArgs := os.Args
+			originalEnvPollInterval := os.Getenv("POLL_INTERVAL")
+			originalEnvReportInterval := os.Getenv("REPORT_INTERVAL")
+
+			defer func() {
+				os.Args = originalArgs
+				os.Setenv("POLL_INTERVAL", originalEnvPollInterval)
+				os.Setenv("REPORT_INTERVAL", originalEnvReportInterval)
+				flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+			}()
+
+			// Устанавливаем окружение
+			os.Setenv("POLL_INTERVAL", tt.envPollInterval)
+			os.Setenv("REPORT_INTERVAL", tt.envReportInterval)
+
+			// Подготавливаем флаги
+			os.Args = []string{"test"}
+			if tt.flagPollInterval != "" {
+				os.Args = append(os.Args, "-p", tt.flagPollInterval)
+			}
+			if tt.flagReportInterval != "" {
+				os.Args = append(os.Args, "-r", tt.flagReportInterval)
+			}
+
+			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+
+			config := parseFlags()
+
+			if config.PollInterval != tt.wantPollInterval {
+				t.Errorf("PollInterval = %v, want %v", config.PollInterval, tt.wantPollInterval)
+			}
+			if config.ReportInterval != tt.wantReportInterval {
+				t.Errorf("ReportInterval = %v, want %v", config.ReportInterval, tt.wantReportInterval)
+			}
+		})
+	}
+}
+
+// Вспомогательная функция для проверки парсинга чисел
+func TestParseFlags_NumberParsing(t *testing.T) {
+	// Сохраняем оригинальные значения
+	originalArgs := os.Args
+	originalEnvPollInterval := os.Getenv("POLL_INTERVAL")
+
+	defer func() {
+		os.Args = originalArgs
+		os.Setenv("POLL_INTERVAL", originalEnvPollInterval)
+		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	}()
+
+	// Тест на некорректное числовое значение в окружении
+	os.Setenv("POLL_INTERVAL", "not-a-number")
+	os.Args = []string{"test", "-p", "5"}
+
+	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+
+	config := parseFlags()
+
+	// Должен использоваться флаг, так как значение окружения некорректное
+	if config.PollInterval != 5*time.Second {
+		t.Errorf("PollInterval = %v, want %v", config.PollInterval, 5*time.Second)
+	}
+}
+
+// Benchmark тест для проверки производительности
+func BenchmarkParseFlags(b *testing.B) {
+	// Сохраняем оригинальные значения
+	originalArgs := os.Args
+	originalEnvAddress := os.Getenv("ADDRESS")
+
+	defer func() {
+		os.Args = originalArgs
+		os.Setenv("ADDRESS", originalEnvAddress)
+		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	}()
+
+	// Устанавливаем тестовые значения
+	os.Setenv("ADDRESS", "benchmark-host:8080")
+	os.Args = []string{"test", "-p", "2", "-r", "10"}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+		parseFlags()
 	}
 }

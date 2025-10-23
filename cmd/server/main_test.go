@@ -1,8 +1,10 @@
 package main
 
 import (
+	"flag"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -312,5 +314,101 @@ func TestGaugeOverwrite(t *testing.T) {
 
 	if len(counter) != 0 {
 		t.Errorf("Ожидалось 0 counter метрик, получили %v", len(counter))
+	}
+}
+
+func TestParseFlags(t *testing.T) {
+	tests := []struct {
+		name        string
+		envAddress  string
+		flagAddress string
+		wantAddress string
+		wantServer  string
+		wantPort    string
+	}{
+		{
+			name:        "default values",
+			wantAddress: "localhost:8080",
+			wantServer:  "localhost",
+			wantPort:    "8080",
+		},
+		{
+			name:        "only flag",
+			flagAddress: "127.0.0.1:9090",
+			wantAddress: "127.0.0.1:9090",
+			wantServer:  "127.0.0.1",
+			wantPort:    "9090",
+		},
+		{
+			name:        "only environment variable",
+			envAddress:  "192.168.1.1:8080",
+			wantAddress: "192.168.1.1:8080",
+			wantServer:  "192.168.1.1",
+			wantPort:    "8080",
+		},
+		{
+			name:        "environment overrides flag",
+			envAddress:  "env-host:8080",
+			flagAddress: "flag-host:9090",
+			wantAddress: "env-host:8080",
+			wantServer:  "env-host",
+			wantPort:    "8080",
+		},
+		{
+			name:        "address without port",
+			flagAddress: "myserver",
+			wantAddress: "myserver",
+			wantServer:  "myserver",
+			wantPort:    "8080",
+		},
+		{
+			name:        "empty environment uses flag",
+			envAddress:  "",
+			flagAddress: "flag-host:8080",
+			wantAddress: "flag-host:8080",
+			wantServer:  "flag-host",
+			wantPort:    "8080",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Сохраняем оригинальные значения
+			originalArgs := os.Args
+			originalEnvAddress := os.Getenv("ADDRESS")
+
+			// Восстанавливаем состояние после теста
+			defer func() {
+				os.Args = originalArgs
+				os.Setenv("ADDRESS", originalEnvAddress)
+				flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+			}()
+
+			// Устанавливаем переменные окружения
+			os.Setenv("ADDRESS", tt.envAddress)
+
+			// Подготавливаем аргументы командной строки
+			os.Args = []string{"test"}
+			if tt.flagAddress != "" {
+				os.Args = append(os.Args, "-a", tt.flagAddress)
+			}
+
+			// Сбрасываем флаги для нового теста
+			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+
+			// Вызываем тестируемую функцию
+			config := parseFlags()
+
+			// Проверяем результаты
+			if config.Address != tt.wantAddress {
+				t.Errorf("Address = %v, want %v", config.Address, tt.wantAddress)
+			}
+			if config.Server != tt.wantServer {
+				t.Errorf("Server = %v, want %v", config.Server, tt.wantServer)
+			}
+			if config.Port != tt.wantPort {
+				t.Errorf("Port = %v, want %v", config.Port, tt.wantPort)
+			}
+		})
 	}
 }

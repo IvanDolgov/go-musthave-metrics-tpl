@@ -27,7 +27,6 @@ func run(cfg Config) error {
 	})
 	router.Post(`/update/{type_metric}/{metric}/{value_metric}`, getMetrics(storage))
 	router.Get(`/value/{type_metric}/{metric}`, sendMetrics(storage))
-
 	err := http.ListenAndServe(fullPathServer, router)
 	if err != nil {
 		panic(err)

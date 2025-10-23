@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -25,10 +26,14 @@ func parseFlags() Config {
 		reportInterval int
 	)
 
+	envAddress := os.Getenv("ADDRESS")
+	envReportInterval := os.Getenv("REPORT_INTERVAL")
+	envPollInterval := os.Getenv("POLL_INTERVAL")
+
 	// Регистрируем флаги
 	flag.StringVar(&address, "a", "localhost:8080", "server address")
-	flag.IntVar(&pollInterval, "r", 2, "update interval (sec)")
-	flag.IntVar(&reportInterval, "p", 10, "push metrics interval (sec)")
+	flag.IntVar(&pollInterval, "p", 2, "update interval (sec)")
+	flag.IntVar(&reportInterval, "r", 10, "push metrics interval (sec)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
@@ -38,6 +43,26 @@ func parseFlags() Config {
 	}
 
 	flag.Parse()
+
+	// Применяем приоритеты параметров
+	// Для адреса
+	if envAddress != "" {
+		address = envAddress
+	}
+
+	// Для интервала опроса
+	if envPollInterval != "" {
+		if value, err := strconv.Atoi(envPollInterval); err == nil {
+			pollInterval = value
+		}
+	}
+
+	// Для интервала отчетности
+	if envReportInterval != "" {
+		if value, err := strconv.Atoi(envReportInterval); err == nil {
+			reportInterval = value
+		}
+	}
 
 	// Проверяем есть ли дополнительные аргументы
 	if len(flag.Args()) > 0 {

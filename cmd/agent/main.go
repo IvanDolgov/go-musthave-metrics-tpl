@@ -74,6 +74,7 @@ func run(cfg Config) error {
 	go func() {
 		for {
 			fmt.Println("Send metrics", time.Now().Format("15:04:05"))
+			fmt.Println(cfg.Address)
 			// Обработать результаты
 			for _, metric := range metricsWithNames {
 				fmt.Printf("%s: ", metric.ShortName) // _ -> i

@@ -20,6 +20,8 @@ func parseFlags() Config {
 		address string
 	)
 
+	envAddress := os.Getenv("ADDRESS")
+
 	// Регистрируем флаги
 	flag.StringVar(&address, "a", "localhost:8080", "server address")
 
@@ -36,6 +38,12 @@ func parseFlags() Config {
 	if len(flag.Args()) > 0 {
 		fmt.Fprintf(os.Stderr, "Error: unknown arguments: %v\n", flag.Args())
 		flag.Usage()
+	}
+
+	// Применяем приоритеты параметров
+	// Для адреса
+	if envAddress != "" {
+		address = envAddress
 	}
 
 	// Создаем и заполняем конфигурацию

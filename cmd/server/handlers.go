@@ -99,6 +99,5 @@ func getMetrics(storage *MemStorage) http.HandlerFunc {
 			http.Error(w, "Invalid type metric", http.StatusBadRequest)
 
 		}
-		fmt.Println(storage.GetAllMetrics())
 	}
 }

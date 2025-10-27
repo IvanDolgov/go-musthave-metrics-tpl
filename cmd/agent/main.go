@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -11,6 +13,13 @@ import (
 	"syscall"
 	"time"
 )
+
+type Metrics struct {
+	ID    string   `json:"id"`              // имя метрики
+	MType string   `json:"type"`            // параметр, принимающий значение gauge или counter
+	Delta *int64   `json:"delta,omitempty"` // значение метрики в случае передачи counter
+	Value *float64 `json:"value,omitempty"` // значение метрики в случае передачи gauge
+}
 
 // run запускает приложение с переданной конфигурацией
 func run(cfg Config) error {
@@ -122,13 +131,51 @@ func main() {
 }
 
 func sendMetric(metricType string, name string, value interface{}, cfg Config) {
-	// Формируем URL с параметрами
+	// Формируем полный адрес сервера
 	fullPathServer := buildServerAddress(cfg.Server, cfg.Port)
-	endpoint := fmt.Sprintf("http://%s/update/%s/%s/%v",
-		fullPathServer, metricType, name, value)
+	endpoint := fmt.Sprintf("http://%s/update", fullPathServer)
 
-	// Отправляем POST запрос
-	response, err := http.Post(endpoint, "text/plain", nil)
+	// Создаем структуру для метрики с значением
+	var metric Metrics
+
+	// Заполняем метрику в зависимости от типа
+	switch metricType {
+	case "gauge":
+		if floatValue, ok := value.(float64); ok {
+			metric = Metrics{
+				ID:    name,
+				MType: metricType,
+				Value: &floatValue,
+			}
+		} else {
+			fmt.Printf("Invalid gauge value type: %T\n", value)
+			return
+		}
+	case "counter":
+		if intValue, ok := value.(int64); ok {
+			metric = Metrics{
+				ID:    name,
+				MType: metricType,
+				Delta: &intValue,
+			}
+		} else {
+			fmt.Printf("Invalid counter value type: %T\n", value)
+			return
+		}
+	default:
+		fmt.Printf("Unknown metric type: %s\n", metricType)
+		return
+	}
+
+	// Кодируем метрику в JSON
+	jsonData, err := json.Marshal(metric)
+	if err != nil {
+		fmt.Println("Error encoding JSON:", err)
+		return
+	}
+
+	// Отправляем POST запрос с JSON
+	response, err := http.Post(endpoint, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		fmt.Println("Error sending metric:", err)
 		return
@@ -136,10 +183,20 @@ func sendMetric(metricType string, name string, value interface{}, cfg Config) {
 
 	defer response.Body.Close()
 
-	// Можно добавить проверку статуса
+	// Проверяем статус ответа
 	if response.StatusCode != http.StatusOK {
 		fmt.Printf("Server returned non-OK status: %d\n", response.StatusCode)
+		return
 	}
+
+	// Читаем и выводим ответ (опционально)
+	var responseMetric Metrics
+	if err := json.NewDecoder(response.Body).Decode(&responseMetric); err != nil {
+		fmt.Println("Error decoding response:", err)
+		return
+	}
+
+	fmt.Printf("Successfully sent metric: %s=%v\n", name, value)
 }
 
 func buildServerAddress(server, port string) string {

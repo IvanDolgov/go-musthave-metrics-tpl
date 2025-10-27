@@ -106,3 +106,25 @@ func (m *MemStorage) GetMetric(name string, metricType MetricType) (interface{},
 		return nil, false
 	}
 }
+
+func (m *MemStorage) GetMetricForJSON(name string, metricType MetricType) Metrics {
+	switch metricType {
+	case Gauge:
+		if value, exists := m.gauges[name]; exists {
+			return Metrics{
+				ID:    name,
+				MType: "gauge",
+				Value: &value,
+			}
+		}
+	case Counter:
+		if value, exists := m.counters[name]; exists {
+			return Metrics{
+				ID:    name,
+				MType: "counter",
+				Delta: &value,
+			}
+		}
+	}
+	return Metrics{} // возвращаем пустую структуру если метрика не найдена
+}

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -99,5 +101,96 @@ func getMetrics(storage *MemStorage) http.HandlerFunc {
 			http.Error(w, "Invalid type metric", http.StatusBadRequest)
 
 		}
+	}
+}
+
+func getJsonMetric(storage *MemStorage) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		var metric Metrics
+		var buf bytes.Buffer
+
+		if req.Method != http.MethodPost {
+			// разрешаем только POST-запросы
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		_, err := buf.ReadFrom(req.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// десериализуем JSON в Metrics
+		if err = json.Unmarshal(buf.Bytes(), &metric); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Сохраняем метрику в storage в зависимости от типа
+		switch metric.MType {
+		case "gauge":
+			if metric.Value == nil {
+				http.Error(w, "Missing value for gauge metric", http.StatusBadRequest)
+				return
+			}
+			storage.SetGauge(metric.ID, *metric.Value)
+
+		case "counter":
+			if metric.Delta == nil {
+				http.Error(w, "Missing delta for counter metric", http.StatusBadRequest)
+				return
+			}
+			storage.IncrementCounter(metric.ID, *metric.Delta)
+
+		default:
+			http.Error(w, "Invalid metric type", http.StatusBadRequest)
+			return
+		}
+
+		// установим правильный заголовок для типа данных
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		// // Возвращаем обновленную метрику, чтоб понимать удалось ли опубликовать
+		updatedMetric := storage.GetMetricForJSON(metric.ID, MetricType(metric.MType))
+		json.NewEncoder(w).Encode(updatedMetric)
+	}
+}
+
+func sendJsonMetric(storage *MemStorage) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		var metric Metrics
+		var buf bytes.Buffer
+
+		if req.Method != http.MethodPost {
+			// разрешаем только POST-запросы
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		_, err := buf.ReadFrom(req.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// десериализуем JSON в Metrics
+		if err = json.Unmarshal(buf.Bytes(), &metric); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Получаем метрику из storage
+		foundMetric := storage.GetMetricForJSON(metric.ID, MetricType(metric.MType))
+
+		// Если метрика не найдена
+		if foundMetric.ID == "" {
+			http.Error(w, "Metric not found", http.StatusNotFound)
+			return
+		}
+
+		// установим правильный заголовок для типа данных
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(foundMetric)
 	}
 }

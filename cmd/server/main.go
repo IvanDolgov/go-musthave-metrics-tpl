@@ -12,6 +12,13 @@ import (
 	"go.uber.org/zap"
 )
 
+type Metrics struct {
+	ID    string   `json:"id"`              // имя метрики
+	MType string   `json:"type"`            // параметр, принимающий значение gauge или counter
+	Delta *int64   `json:"delta,omitempty"` // значение метрики в случае передачи counter
+	Value *float64 `json:"value,omitempty"` // значение метрики в случае передачи gauge
+}
+
 // run запускает приложение с переданной конфигурацией
 func run(cfg Config) error {
 
@@ -33,6 +40,8 @@ func run(cfg Config) error {
 		http.Error(w, "Metric name cannot be empty", http.StatusNotFound)
 	})
 	router.Post(`/update/{type_metric}/{metric}/{value_metric}`, getMetrics(storage))
+	router.Post(`/update`, getJsonMetric(storage))
+	router.Post(`/value`, sendJsonMetric(storage))
 	router.Get(`/value/{type_metric}/{metric}`, sendMetrics(storage))
 
 	// логируем запуск сервера

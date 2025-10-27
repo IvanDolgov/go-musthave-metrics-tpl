@@ -104,7 +104,7 @@ func getMetrics(storage *MemStorage) http.HandlerFunc {
 	}
 }
 
-func getJsonMetric(storage *MemStorage) http.HandlerFunc {
+func getJSONMetric(storage *MemStorage) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		var metric Metrics
 		var buf bytes.Buffer
@@ -157,7 +157,7 @@ func getJsonMetric(storage *MemStorage) http.HandlerFunc {
 	}
 }
 
-func sendJsonMetric(storage *MemStorage) http.HandlerFunc {
+func sendJSONMetric(storage *MemStorage) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		var metric Metrics
 		var buf bytes.Buffer

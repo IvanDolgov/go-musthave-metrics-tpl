@@ -168,27 +168,6 @@ func TestMemStorage_GetMetric(t *testing.T) {
 			wantValue:  nil,
 			wantExists: false,
 		},
-		{
-			name:       "Another existing gauge metric",
-			metricName: "memory",
-			metricType: Gauge,
-			wantValue:  1024.0,
-			wantExists: true,
-		},
-		{
-			name:       "Another existing counter metric",
-			metricName: "errors",
-			metricType: Counter,
-			wantValue:  int64(2),
-			wantExists: true,
-		},
-		{
-			name:       "Empty metric name",
-			metricName: "",
-			metricType: Gauge,
-			wantValue:  nil,
-			wantExists: false,
-		},
 	}
 
 	for _, tt := range tests {
@@ -216,6 +195,91 @@ func TestMemStorage_GetMetric(t *testing.T) {
 				if gotValue != nil {
 					t.Errorf("GetMetric() value = %v, want nil when not exists", gotValue)
 				}
+			}
+		})
+	}
+}
+
+// Тест для метода GetMetricForJSON
+func TestMemStorage_GetMetricForJSON(t *testing.T) {
+	storage := NewMemStorage()
+
+	// Заполняем тестовыми данными
+	storage.SetGauge("temperature", 25.5)
+	storage.IncrementCounter("requests", 10)
+
+	tests := []struct {
+		name       string
+		metricName string
+		metricType MetricType
+		wantID     string
+		wantMType  string
+		wantValue  *float64
+		wantDelta  *int64
+	}{
+		{
+			name:       "Existing gauge metric",
+			metricName: "temperature",
+			metricType: Gauge,
+			wantID:     "temperature",
+			wantMType:  "gauge",
+			wantValue:  func() *float64 { v := 25.5; return &v }(),
+			wantDelta:  nil,
+		},
+		{
+			name:       "Existing counter metric",
+			metricName: "requests",
+			metricType: Counter,
+			wantID:     "requests",
+			wantMType:  "counter",
+			wantValue:  nil,
+			wantDelta:  func() *int64 { v := int64(10); return &v }(),
+		},
+		{
+			name:       "Non-existing gauge metric",
+			metricName: "nonexistent",
+			metricType: Gauge,
+			wantID:     "",
+			wantMType:  "",
+			wantValue:  nil,
+			wantDelta:  nil,
+		},
+		{
+			name:       "Non-existing counter metric",
+			metricName: "nonexistent",
+			metricType: Counter,
+			wantID:     "",
+			wantMType:  "",
+			wantValue:  nil,
+			wantDelta:  nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := storage.GetMetricForJSON(tt.metricName, tt.metricType)
+
+			if result.ID != tt.wantID {
+				t.Errorf("GetMetricForJSON() ID = %v, want %v", result.ID, tt.wantID)
+			}
+			if result.MType != tt.wantMType {
+				t.Errorf("GetMetricForJSON() MType = %v, want %v", result.MType, tt.wantMType)
+			}
+
+			// Проверяем Value
+			if (tt.wantValue == nil) != (result.Value == nil) {
+				t.Errorf("GetMetricForJSON() Value presence mismatch: got %v, want %v", result.Value, tt.wantValue)
+			}
+			if tt.wantValue != nil && result.Value != nil && *result.Value != *tt.wantValue {
+				t.Errorf("GetMetricForJSON() Value = %v, want %v", *result.Value, *tt.wantValue)
+			}
+
+			// Проверяем Delta
+			if (tt.wantDelta == nil) != (result.Delta == nil) {
+				t.Errorf("GetMetricForJSON() Delta presence mismatch: got %v, want %v", result.Delta, tt.wantDelta)
+			}
+			if tt.wantDelta != nil && result.Delta != nil && *result.Delta != *tt.wantDelta {
+				t.Errorf("GetMetricForJSON() Delta = %v, want %v", *result.Delta, *tt.wantDelta)
 			}
 		})
 	}

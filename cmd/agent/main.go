@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -19,6 +20,14 @@ type Metrics struct {
 	MType string   `json:"type"`            // параметр, принимающий значение gauge или counter
 	Delta *int64   `json:"delta,omitempty"` // значение метрики в случае передачи counter
 	Value *float64 `json:"value,omitempty"` // значение метрики в случае передачи gauge
+}
+
+// Структура для хранения текущих метрик
+type CurrentMetrics struct {
+	MemStats    runtime.MemStats
+	PollCount   int64
+	RandomValue float64
+	mu          sync.RWMutex
 }
 
 // run запускает приложение с переданной конфигурацией
@@ -31,26 +40,39 @@ func run(cfg Config) error {
 	// Ждем немного чтобы сервер успел запуститься
 	time.Sleep(2 * time.Second)
 
-	// Подсчет количество запусков сбора метрик
-	var pollCount int64
-	var randomValue float64
+	// Текущие метрики
+	currentMetrics := &CurrentMetrics{}
 
-	// ГОРУТИНА СБОРА И ОТПРАВКИ МЕТРИК
+	// ГОРУТИНА СБОРА МЕТРИК (с интервалом PollInterval)
 	go func() {
-		ticker := time.NewTicker(time.Duration(cfg.ReportInterval))
-		defer ticker.Stop()
+		pollTicker := time.NewTicker(time.Duration(cfg.PollInterval))
+		defer pollTicker.Stop()
 
-		for {
-			select {
-			case <-ticker.C:
-				pollCount++
-				randomValue = rand.Float64() * 100
+		for range pollTicker.C {
+			currentMetrics.mu.Lock()
+			currentMetrics.PollCount++
+			currentMetrics.RandomValue = rand.Float64() * 100
+			runtime.ReadMemStats(&currentMetrics.MemStats)
+			currentMetrics.mu.Unlock()
 
-				fmt.Printf("Sending metrics batch #%d to %s\n", pollCount, cfg.Address)
+			fmt.Printf("Collected metrics batch #%d\n", currentMetrics.PollCount)
+		}
+	}()
 
-				// Собираем runtime метрики
-				collectAndSendRuntimeMetrics(cfg, pollCount, randomValue)
-			}
+	// ГОРУТИНА ОТПРАВКИ МЕТРИК (с интервалом ReportInterval)
+	go func() {
+		reportTicker := time.NewTicker(time.Duration(cfg.ReportInterval))
+		defer reportTicker.Stop()
+
+		for range reportTicker.C {
+			currentMetrics.mu.RLock()
+			pollCount := currentMetrics.PollCount
+			randomValue := currentMetrics.RandomValue
+			memStats := currentMetrics.MemStats
+			currentMetrics.mu.RUnlock()
+
+			fmt.Printf("Sending metrics batch #%d to %s\n", pollCount, cfg.Address)
+			sendRuntimeMetrics(cfg, pollCount, randomValue, memStats)
 		}
 	}()
 
@@ -60,10 +82,7 @@ func run(cfg Config) error {
 	return nil
 }
 
-func collectAndSendRuntimeMetrics(cfg Config, pollCount int64, randomValue float64) {
-	var memStats runtime.MemStats
-	runtime.ReadMemStats(&memStats)
-
+func sendRuntimeMetrics(cfg Config, pollCount int64, randomValue float64, memStats runtime.MemStats) {
 	// Отправляем ВСЕ необходимые метрики из автотеста
 	metricsToSend := map[string]float64{
 		// Runtime метрики из memStats

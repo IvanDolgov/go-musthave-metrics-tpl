@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"runtime"
+	"runtime/metrics"
 	"strings"
 	"syscall"
 	"time"
@@ -28,62 +28,84 @@ func run(cfg Config) error {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	fmt.Println("Программа запущена. Нажмите Ctrl+C для остановки")
 
+	// структура для описания метрик
+	type MetricWithName struct {
+		Sample    metrics.Sample
+		ShortName string
+	}
+
+	// список метрик с именами
+	metricsWithNames := []MetricWithName{
+		{metrics.Sample{Name: "/memory/classes/total:bytes"}, "Alloc"},
+		{metrics.Sample{Name: "/memory/classes/profiling/buckets:bytes"}, "BuckHashSys"},
+		{metrics.Sample{Name: "/memory/classes/heap/released:bytes"}, "HeapReleased"},
+		{metrics.Sample{Name: "/memory/classes/metadata/mspan/inuse:bytes"}, "MSpanInuse"},
+		{metrics.Sample{Name: "/memory/classes/metadata/mspan/free:bytes"}, "MSpanSys"},
+		{metrics.Sample{Name: "/memory/classes/metadata/mcache/inuse:bytes"}, "MCacheInuse"},
+		{metrics.Sample{Name: "/memory/classes/metadata/mcache/free:bytes"}, "MCacheSys"},
+		{metrics.Sample{Name: "/memory/classes/os-stacks:bytes"}, "StackInuse"},
+		{metrics.Sample{Name: "/memory/classes/other:bytes"}, "OtherSys"},
+		{metrics.Sample{Name: "/memory/classes/total:bytes"}, "Sys"},
+		{metrics.Sample{Name: "/gc/cpu/fraction:gc-cpu-fraction"}, "GCCPUFraction"},
+		{metrics.Sample{Name: "/memory/classes/heap/unused:bytes"}, "HeapIdle"},
+		{metrics.Sample{Name: "/memory/classes/heap/objects:bytes"}, "HeapInuse"},
+		{metrics.Sample{Name: "/gc/heap/goal:bytes"}, "NextGC"},
+		{metrics.Sample{Name: "/gc/pauses:seconds"}, "PauseTotalNs"},
+		{metrics.Sample{Name: "/gc/heap/frees:objects"}, "Frees"},
+		{metrics.Sample{Name: "/gc/heap/objects:objects"}, "HeapObjects"},
+		{metrics.Sample{Name: "/gc/cycles/total:gc-cycles"}, "NumGC"},
+		{metrics.Sample{Name: "/gc/cycles/forced:gc-cycles"}, "NumForcedGC"},
+		{metrics.Sample{Name: "/gc/heap/allocs:objects"}, "Mallocs"},
+		{metrics.Sample{Name: "/gc/heap/allocs:bytes"}, "TotalAlloc"},
+	}
+
 	// Подсчет количество запусков сбора метрик
-	var metricsReadCounter int64
+	var metricsReadCounter int
 
 	go func() {
 		for {
 			metricsReadCounter++
-			fmt.Println("Get and send metrics", time.Now().Format("15:04:05"))
+			fmt.Println("Get metrics", time.Now().Format("15:04:05"))
+			// Прочитать метрики без имен
+			// metrics.Read(need_metrics)
+
+			// Прочитать метрики с условиями, что там имена лежат отдельно
+			for i := range metricsWithNames {
+				metrics.Read([]metrics.Sample{metricsWithNames[i].Sample})
+			}
+
+			time.Sleep(time.Duration(cfg.PollInterval))
+		}
+	}()
+
+	time.Sleep(1 * time.Second)
+
+	go func() {
+		for {
+			fmt.Println("Send metrics", time.Now().Format("15:04:05"))
 			fmt.Println(cfg.Address)
+			// Обработать результаты
+			for _, metric := range metricsWithNames {
+				fmt.Printf("%s: ", metric.ShortName) // _ -> i
+				var value float64
+				switch metric.Sample.Value.Kind() {
+				case metrics.KindUint64:
+					value = float64(metric.Sample.Value.Uint64())
+				case metrics.KindFloat64:
+					value = metric.Sample.Value.Float64()
 
-			// Собираем метрики через runtime.MemStats
-			var memStats runtime.MemStats
-			runtime.ReadMemStats(&memStats)
+				}
+				fmt.Printf("%f\n", value)
+				sendMetric("gauge", metric.ShortName, value, cfg)
 
-			// Отправляем gauge метрики
-			gauges := map[string]float64{
-				"Alloc":         float64(memStats.Alloc),
-				"BuckHashSys":   float64(memStats.BuckHashSys),
-				"Frees":         float64(memStats.Frees),
-				"GCCPUFraction": float64(memStats.GCCPUFraction),
-				"GCSys":         float64(memStats.GCSys),
-				"HeapAlloc":     float64(memStats.HeapAlloc),
-				"HeapIdle":      float64(memStats.HeapIdle),
-				"HeapInuse":     float64(memStats.HeapInuse),
-				"HeapObjects":   float64(memStats.HeapObjects),
-				"HeapReleased":  float64(memStats.HeapReleased),
-				"HeapSys":       float64(memStats.HeapSys),
-				"LastGC":        float64(memStats.LastGC),
-				"Lookups":       float64(memStats.Lookups),
-				"MCacheInuse":   float64(memStats.MCacheInuse),
-				"MCacheSys":     float64(memStats.MCacheSys),
-				"MSpanInuse":    float64(memStats.MSpanInuse),
-				"MSpanSys":      float64(memStats.MSpanSys),
-				"Mallocs":       float64(memStats.Mallocs),
-				"NextGC":        float64(memStats.NextGC),
-				"NumForcedGC":   float64(memStats.NumForcedGC),
-				"NumGC":         float64(memStats.NumGC),
-				"OtherSys":      float64(memStats.OtherSys),
-				"PauseTotalNs":  float64(memStats.PauseTotalNs),
-				"StackInuse":    float64(memStats.StackInuse),
-				"StackSys":      float64(memStats.StackSys),
-				"Sys":           float64(memStats.Sys),
-				"TotalAlloc":    float64(memStats.TotalAlloc),
 			}
-
-			for name, value := range gauges {
-				fmt.Printf("%s: %f\n", name, value)
-				sendMetric("gauge", name, value, cfg)
-			}
-
 			// отправляем счетчик
-			fmt.Printf("%s: %d\n", "PollCount", metricsReadCounter)
+			fmt.Printf("%s: %d", "PollCount", metricsReadCounter)
 			sendMetric("counter", "PollCount", metricsReadCounter, cfg)
 
 			// отправляем рандомное число
 			RandomValue := rand.Float64() * 100
-			fmt.Printf("%s: %f\n", "RandomValue", RandomValue)
+			fmt.Printf("%s: %f", "RandomValue", RandomValue)
 			sendMetric("gauge", "RandomValue", RandomValue, cfg)
 
 			time.Sleep(time.Duration(cfg.ReportInterval))

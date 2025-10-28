@@ -29,7 +29,17 @@ func parseFlags() Config {
 	envAddress := os.Getenv("ADDRESS")
 	envReportInterval := os.Getenv("REPORT_INTERVAL")
 	envPollInterval := os.Getenv("POLL_INTERVAL")
+	if envPollInterval != "" {
+		if value, err := strconv.Atoi(envPollInterval); err == nil {
+			pollInterval = value
+		}
+	}
 
+	if envReportInterval != "" {
+		if value, err := strconv.Atoi(envReportInterval); err == nil {
+			reportInterval = value
+		}
+	}
 	// Регистрируем флаги
 	flag.StringVar(&address, "a", "localhost:8080", "server address")
 	flag.IntVar(&pollInterval, "p", 2, "update interval (sec)")

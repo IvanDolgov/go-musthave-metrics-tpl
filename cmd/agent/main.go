@@ -85,19 +85,22 @@ func run(cfg Config) error {
 			fmt.Println("Send metrics", time.Now().Format("15:04:05"))
 			fmt.Println(cfg.Address)
 			// Обработать результаты
+			// В функции run, внутри цикла отправки метрик:
 			for _, metric := range metricsWithNames {
-				fmt.Printf("%s: ", metric.ShortName) // _ -> i
+				fmt.Printf("%s: ", metric.ShortName)
 				var value float64
 				switch metric.Sample.Value.Kind() {
 				case metrics.KindUint64:
 					value = float64(metric.Sample.Value.Uint64())
 				case metrics.KindFloat64:
 					value = metric.Sample.Value.Float64()
-
 				}
 				fmt.Printf("%f\n", value)
-				sendMetric("gauge", metric.ShortName, value, cfg)
 
+				// Отправляем только если значение не нулевое или это важная метрика
+				if value != 0 || metric.ShortName == "Alloc" {
+					sendMetric("gauge", metric.ShortName, value, cfg)
+				}
 			}
 			// отправляем счетчик
 			fmt.Printf("%s: %d", "PollCount", metricsReadCounter)

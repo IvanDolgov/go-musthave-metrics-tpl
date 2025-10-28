@@ -41,7 +41,9 @@ func run(cfg Config) error {
 	})
 	router.Post(`/update/{type_metric}/{metric}/{value_metric}`, getMetrics(storage))
 	router.Post(`/update`, getJSONMetric(storage))
+	router.Post(`/update/`, getJSONMetric(storage))
 	router.Post(`/value`, sendJSONMetric(storage))
+	router.Post(`/value/`, sendJSONMetric(storage))
 	router.Get(`/value/{type_metric}/{metric}`, sendMetrics(storage))
 
 	// логируем запуск сервера

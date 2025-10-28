@@ -40,9 +40,16 @@ func run(cfg Config) error {
 		http.Error(w, "Metric name cannot be empty", http.StatusNotFound)
 	})
 	router.Post(`/update/{type_metric}/{metric}/{value_metric}`, getMetrics(storage))
+	router.Post(`/update/{type_metric}/{metric}/{value_metric}/`, getMetrics(storage))
+
 	router.Post(`/update`, getJSONMetric(storage))
+	router.Post(`/update/`, getJSONMetric(storage))
+
 	router.Post(`/value`, sendJSONMetric(storage))
+	router.Post(`/value/`, sendJSONMetric(storage))
+
 	router.Get(`/value/{type_metric}/{metric}`, sendMetrics(storage))
+	router.Get(`/value/{type_metric}/{metric}/`, sendMetrics(storage))
 
 	// логируем запуск сервера
 	logger.Log.Info("Starting server", zap.String("address", fullPathServer))

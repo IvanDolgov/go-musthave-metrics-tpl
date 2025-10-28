@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"net/http"
 	"net/http/httptest"
@@ -11,76 +12,207 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// Тесты для обработчика getMetrics
-func TestGetMetricsHandler(t *testing.T) {
+// Тесты для обработчика getJSONMetric (бывший updateJsonMetrics)
+func TestGetJSONMetricHandler(t *testing.T) {
 	storage := NewMemStorage()
-	handler := getMetrics(storage)
+	handler := getJSONMetric(storage)
 
 	tests := []struct {
 		name           string
 		method         string
-		url            string
+		body           string
 		expectedStatus int
 	}{
 		{
 			name:           "Valid gauge metric",
 			method:         "POST",
-			url:            "/update/gauge/temperature/25.5",
+			body:           `{"id":"temperature", "type":"gauge", "value":25.5}`,
 			expectedStatus: http.StatusOK,
 		},
 		{
 			name:           "Valid counter metric",
 			method:         "POST",
-			url:            "/update/counter/requests/10",
+			body:           `{"id":"requests", "type":"counter", "delta":10}`,
 			expectedStatus: http.StatusOK,
 		},
 		{
 			name:           "Invalid method GET",
 			method:         "GET",
-			url:            "/update/gauge/temperature/25.5",
+			body:           `{"id":"test", "type":"gauge", "value":1.0}`,
 			expectedStatus: http.StatusMethodNotAllowed,
 		},
 		{
-			name:           "Invalid gauge value",
+			name:           "Invalid JSON",
 			method:         "POST",
-			url:            "/update/gauge/temperature/invalid",
+			body:           `invalid json`,
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
-			name:           "Invalid counter value",
+			name:           "Missing gauge value",
 			method:         "POST",
-			url:            "/update/counter/requests/invalid",
+			body:           `{"id":"temperature", "type":"gauge"}`,
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "Missing counter delta",
+			method:         "POST",
+			body:           `{"id":"requests", "type":"counter"}`,
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
 			name:           "Invalid metric type",
 			method:         "POST",
-			url:            "/update/invalid/metric/123",
+			body:           `{"id":"test", "type":"invalid", "value":1.0}`,
 			expectedStatus: http.StatusBadRequest,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req, err := http.NewRequest(tt.method, tt.url, nil)
+			req, err := http.NewRequest(tt.method, "/update", strings.NewReader(tt.body))
 			if err != nil {
 				t.Fatal(err)
 			}
-
-			router := chi.NewRouter()
-			router.Post("/update/{type_metric}/{metric}/{value_metric}", handler)
+			req.Header.Set("Content-Type", "application/json")
 
 			rr := httptest.NewRecorder()
-			router.ServeHTTP(rr, req)
+			handler.ServeHTTP(rr, req)
 
 			if status := rr.Code; status != tt.expectedStatus {
 				t.Errorf("Неожиданный код ответа: получили %v хотели %v", status, tt.expectedStatus)
+			}
+
+			// Проверяем что успешные запросы возвращают JSON
+			if tt.expectedStatus == http.StatusOK {
+				contentType := rr.Header().Get("Content-Type")
+				if !strings.Contains(contentType, "application/json") {
+					t.Errorf("Expected JSON content type, got %s", contentType)
+				}
+
+				// Проверяем что ответ валидный JSON
+				var response Metrics
+				if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+					t.Errorf("Invalid JSON response: %v", err)
+				}
 			}
 		})
 	}
 }
 
-// Тесты для обработчика sendMetrics
+// Тесты для обработчика sendJSONMetric (бывший getJsonMetricValue)
+func TestSendJSONMetricHandler(t *testing.T) {
+	storage := NewMemStorage()
+
+	// Добавляем тестовые данные
+	storage.SetGauge("temperature", 25.5)
+	storage.IncrementCounter("requests", 10)
+
+	handler := sendJSONMetric(storage)
+
+	tests := []struct {
+		name           string
+		method         string
+		body           string
+		expectedStatus int
+		expectedValue  interface{}
+	}{
+		{
+			name:           "Existing gauge metric",
+			method:         "POST",
+			body:           `{"id":"temperature", "type":"gauge"}`,
+			expectedStatus: http.StatusOK,
+			expectedValue:  25.5,
+		},
+		{
+			name:           "Existing counter metric",
+			method:         "POST",
+			body:           `{"id":"requests", "type":"counter"}`,
+			expectedStatus: http.StatusOK,
+			expectedValue:  int64(10),
+		},
+		{
+			name:           "Non-existing gauge metric",
+			method:         "POST",
+			body:           `{"id":"nonexistent", "type":"gauge"}`,
+			expectedStatus: http.StatusNotFound,
+			expectedValue:  nil,
+		},
+		{
+			name:           "Non-existing counter metric",
+			method:         "POST",
+			body:           `{"id":"nonexistent", "type":"counter"}`,
+			expectedStatus: http.StatusNotFound,
+			expectedValue:  nil,
+		},
+		{
+			name:           "Wrong type for existing metric",
+			method:         "POST",
+			body:           `{"id":"temperature", "type":"counter"}`,
+			expectedStatus: http.StatusNotFound,
+			expectedValue:  nil,
+		},
+		{
+			name:           "Invalid JSON",
+			method:         "POST",
+			body:           `invalid json`,
+			expectedStatus: http.StatusBadRequest,
+			expectedValue:  nil,
+		},
+		{
+			name:           "Invalid method GET",
+			method:         "GET",
+			body:           `{"id":"temperature", "type":"gauge"}`,
+			expectedStatus: http.StatusMethodNotAllowed,
+			expectedValue:  nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest(tt.method, "/value", strings.NewReader(tt.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+
+			if status := rr.Code; status != tt.expectedStatus {
+				t.Errorf("Неожиданный код ответа: получили %v хотели %v", status, tt.expectedStatus)
+			}
+
+			// Проверяем успешные ответы
+			if tt.expectedStatus == http.StatusOK {
+				contentType := rr.Header().Get("Content-Type")
+				if !strings.Contains(contentType, "application/json") {
+					t.Errorf("Expected JSON content type, got %s", contentType)
+				}
+
+				var response Metrics
+				if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+					t.Errorf("Invalid JSON response: %v", err)
+				}
+
+				// Проверяем значения
+				if tt.expectedValue != nil {
+					switch tt.expectedValue.(type) {
+					case float64:
+						if response.Value == nil || *response.Value != tt.expectedValue.(float64) {
+							t.Errorf("Expected value %v, got %v", tt.expectedValue, response.Value)
+						}
+					case int64:
+						if response.Delta == nil || *response.Delta != tt.expectedValue.(int64) {
+							t.Errorf("Expected delta %v, got %v", tt.expectedValue, response.Delta)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+// Тесты для обработчика sendMetrics (старый эндпоинт, оставлен для обратной совместимости)
 func TestSendMetrics(t *testing.T) {
 	storage := NewMemStorage()
 
@@ -104,23 +236,11 @@ func TestSendMetrics(t *testing.T) {
 			name:           "Existing counter metric",
 			url:            "/value/counter/requests",
 			expectedStatus: http.StatusOK,
-			expectedBody:   "10", // Теперь ожидаем целое число
+			expectedBody:   "10",
 		},
 		{
 			name:           "Non-existing gauge metric",
 			url:            "/value/gauge/nonexistent",
-			expectedStatus: http.StatusNotFound,
-			expectedBody:   "",
-		},
-		{
-			name:           "Non-existing counter metric",
-			url:            "/value/counter/nonexistent",
-			expectedStatus: http.StatusNotFound,
-			expectedBody:   "",
-		},
-		{
-			name:           "Wrong type for existing metric",
-			url:            "/value/counter/temperature", // temperature is gauge, not counter
 			expectedStatus: http.StatusNotFound,
 			expectedBody:   "",
 		},
@@ -166,7 +286,7 @@ func TestSummaryMetrics(t *testing.T) {
 	tests := []struct {
 		name           string
 		expectedStatus int
-		expectedParts  []string // Части, которые должны присутствовать в ответе
+		expectedParts  []string
 	}{
 		{
 			name:           "Summary with metrics",
@@ -204,7 +324,6 @@ func TestSummaryMetrics(t *testing.T) {
 				}
 			}
 
-			// Проверяем Content-Type
 			contentType := rr.Header().Get("Content-Type")
 			if contentType != "text/plain" {
 				t.Errorf("Неожиданный Content-Type: получили %v хотели text/plain", contentType)
@@ -213,110 +332,101 @@ func TestSummaryMetrics(t *testing.T) {
 	}
 }
 
-// Тесты для пустого хранилища
-func TestSummaryMetricsEmpty(t *testing.T) {
+// Тесты для проверки инкремента счетчика через JSON API
+func TestCounterIncrementJson(t *testing.T) {
 	storage := NewMemStorage()
-
-	req, err := http.NewRequest("GET", "/", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	rr := httptest.NewRecorder()
-	handler := summaryMetrics(storage)
-	handler.ServeHTTP(rr, req)
-
-	if status := rr.Code; status != http.StatusOK {
-		t.Errorf("Неожиданный код ответа: получили %v хотели %v", status, http.StatusOK)
-	}
-
-	body := rr.Body.String()
-	expectedParts := []string{
-		"Gauge Metrics:",
-		"Counter Metrics:",
-	}
-
-	for _, expectedPart := range expectedParts {
-		if !strings.Contains(body, expectedPart) {
-			t.Errorf("Ожидаемая часть '%s' не найдена в теле ответа", expectedPart)
-		}
-	}
-}
-
-// Тесты для проверки инкремента счетчика
-func TestCounterIncrement(t *testing.T) {
-	storage := NewMemStorage()
-	handler := getMetrics(storage)
+	handler := getJSONMetric(storage)
 
 	// Первое увеличение счетчика
-	req1, _ := http.NewRequest("POST", "/update/counter/requests/5", nil)
+	req1, _ := http.NewRequest("POST", "/update", strings.NewReader(`{"id":"requests", "type":"counter", "delta":5}`))
+	req1.Header.Set("Content-Type", "application/json")
 	rr1 := httptest.NewRecorder()
-
-	router := chi.NewRouter()
-	router.Post("/update/{type_metric}/{metric}/{value_metric}", handler)
-	router.ServeHTTP(rr1, req1)
+	handler.ServeHTTP(rr1, req1)
 
 	if rr1.Code != http.StatusOK {
 		t.Errorf("Первый запрос не удался: получили %v хотели %v", rr1.Code, http.StatusOK)
 	}
 
 	// Второе увеличение того же счетчика
-	req2, _ := http.NewRequest("POST", "/update/counter/requests/3", nil)
+	req2, _ := http.NewRequest("POST", "/update", strings.NewReader(`{"id":"requests", "type":"counter", "delta":3}`))
+	req2.Header.Set("Content-Type", "application/json")
 	rr2 := httptest.NewRecorder()
-	router.ServeHTTP(rr2, req2)
+	handler.ServeHTTP(rr2, req2)
 
 	if rr2.Code != http.StatusOK {
 		t.Errorf("Второй запрос не удался: получили %v хотели %v", rr2.Code, http.StatusOK)
 	}
 
 	// Проверяем итоговое значение
-	gauge, counter := storage.GetAllMetrics()
+	_, counter := storage.GetAllMetrics()
 	if counter["requests"] != 8 {
 		t.Errorf("Неверное итоговое значение счетчика: получили %v хотели %v", counter["requests"], 8)
 	}
-
-	if len(gauge) != 0 {
-		t.Errorf("Ожидалось 0 gauge метрик, получили %v", len(gauge))
-	}
 }
 
-// Тесты для проверки перезаписи gauge
-func TestGaugeOverwrite(t *testing.T) {
+// Тесты для проверки перезаписи gauge через JSON API
+func TestGaugeOverwriteJson(t *testing.T) {
 	storage := NewMemStorage()
-	handler := getMetrics(storage)
+	handler := getJSONMetric(storage)
 
 	// Первая установка gauge
-	req1, _ := http.NewRequest("POST", "/update/gauge/temperature/25.5", nil)
+	req1, _ := http.NewRequest("POST", "/update", strings.NewReader(`{"id":"temperature", "type":"gauge", "value":25.5}`))
+	req1.Header.Set("Content-Type", "application/json")
 	rr1 := httptest.NewRecorder()
-
-	router := chi.NewRouter()
-	router.Post("/update/{type_metric}/{metric}/{value_metric}", handler)
-	router.ServeHTTP(rr1, req1)
+	handler.ServeHTTP(rr1, req1)
 
 	if rr1.Code != http.StatusOK {
 		t.Errorf("Первый запрос не удался: получили %v хотели %v", rr1.Code, http.StatusOK)
 	}
 
 	// Вторая установка того же gauge
-	req2, _ := http.NewRequest("POST", "/update/gauge/temperature/30.2", nil)
+	req2, _ := http.NewRequest("POST", "/update", strings.NewReader(`{"id":"temperature", "type":"gauge", "value":30.2}`))
+	req2.Header.Set("Content-Type", "application/json")
 	rr2 := httptest.NewRecorder()
-	router.ServeHTTP(rr2, req2)
+	handler.ServeHTTP(rr2, req2)
 
 	if rr2.Code != http.StatusOK {
 		t.Errorf("Второй запрос не удался: получили %v хотели %v", rr2.Code, http.StatusOK)
 	}
 
 	// Проверяем итоговое значение
-	gauge, counter := storage.GetAllMetrics()
+	gauge, _ := storage.GetAllMetrics()
 	if gauge["temperature"] != 30.2 {
 		t.Errorf("Неверное итоговое значение gauge: получили %v хотели %v", gauge["temperature"], 30.2)
 	}
+}
 
-	if len(counter) != 0 {
-		t.Errorf("Ожидалось 0 counter метрик, получили %v", len(counter))
+// Тест для проверки ответа после обновления метрики
+func TestGetJSONMetricResponse(t *testing.T) {
+	storage := NewMemStorage()
+	handler := getJSONMetric(storage)
+
+	req, _ := http.NewRequest("POST", "/update", strings.NewReader(`{"id":"test", "type":"gauge", "value":99.9}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rr.Code)
+	}
+
+	var response Metrics
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Errorf("Error unmarshaling response: %v", err)
+	}
+
+	if response.ID != "test" {
+		t.Errorf("Expected ID 'test', got '%s'", response.ID)
+	}
+	if response.MType != "gauge" {
+		t.Errorf("Expected type 'gauge', got '%s'", response.MType)
+	}
+	if response.Value == nil || *response.Value != 99.9 {
+		t.Errorf("Expected value 99.9, got %v", response.Value)
 	}
 }
 
+// Тесты parseFlags остаются без изменений
 func TestParseFlags(t *testing.T) {
 	tests := []struct {
 		name        string

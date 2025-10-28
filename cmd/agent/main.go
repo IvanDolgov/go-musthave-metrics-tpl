@@ -64,7 +64,6 @@ func run(cfg Config) error {
 		{metrics.Sample{Name: "/gc/limiter/last-enabled:gc-cycle"}, "LastGC"},
 		{metrics.Sample{Name: "/sched/lookups:seconds"}, "Lookups"},
 		{metrics.Sample{Name: "/memory/classes/heap:bytes"}, "GCSys"},
-}
 	}
 
 	// Подсчет количество запусков сбора метрик

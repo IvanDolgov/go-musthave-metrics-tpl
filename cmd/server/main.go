@@ -31,9 +31,6 @@ func run(cfg Config) error {
 	// создаем роутер
 	router := chi.NewRouter()
 
-	// Убираем лишний слеш в конце
-	router.Use(redirectTrailingSlash)
-
 	// Добавляем middleware логирования для всех маршрутов
 	router.Use(withLogging)
 
@@ -42,13 +39,18 @@ func run(cfg Config) error {
 		http.Error(w, "Metric name cannot be empty", http.StatusNotFound)
 	})
 
-	router.Post(`/update`, getJSONMetric(storage))
-	router.Post(`/value`, sendJSONMetric(storage))
+	router.Post("/update", getJSONMetric(storage))
+	router.Post("/update/", getJSONMetric(storage))
 
-	// Старые эндпоинты тоже в двух вариантах
-	router.Post(`/update/{type_metric}/{metric}/{value_metric}`, getMetrics(storage))
+	router.Post("/value", sendJSONMetric(storage))
+	router.Post("/value/", sendJSONMetric(storage))
 
-	router.Get(`/value/{type_metric}/{metric}`, sendMetrics(storage))
+	// Legacy endpoints (тоже оба варианта)
+	router.Post("/update/{type_metric}/{metric}/{value_metric}", getMetrics(storage))
+	router.Post("/update/{type_metric}/{metric}/{value_metric}/", getMetrics(storage))
+
+	router.Get("/value/{type_metric}/{metric}", sendMetrics(storage))
+	router.Get("/value/{type_metric}/{metric}/", sendMetrics(storage))
 
 	router.Get(`/`, summaryMetrics(storage))
 
@@ -62,22 +64,6 @@ func run(cfg Config) error {
 	}
 
 	return nil
-}
-
-// redirectTrailingSlash middleware автоматически редиректит запросы со слешем
-func redirectTrailingSlash(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-
-		// Если путь заканчивается на слеш и это не корневой путь - делаем редирект
-		if path != "/" && strings.HasSuffix(path, "/") {
-			newPath := strings.TrimSuffix(path, "/")
-			http.Redirect(w, r, newPath, http.StatusMovedPermanently)
-			return
-		}
-
-		next.ServeHTTP(w, r)
-	})
 }
 
 func main() {

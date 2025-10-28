@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"runtime"
 	"runtime/metrics"
 	"strings"
 	"syscall"
@@ -87,21 +86,6 @@ func run(cfg Config) error {
 	var metricsReadCounter int
 
 	go func() {
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-
-		for range ticker.C {
-			// Создаем активность для изменения метрик
-			_ = make([]byte, rand.Intn(2048)+512)
-			_ = fmt.Sprintf("metric_activity_%d", time.Now().UnixNano())
-
-			if rand.Float32() < 0.1 {
-				runtime.GC()
-			}
-		}
-	}()
-
-	go func() {
 		for {
 			metricsReadCounter++
 			fmt.Println("Get metrics", time.Now().Format("15:04:05"))
@@ -139,7 +123,7 @@ func run(cfg Config) error {
 
 			}
 			// отправляем счетчик
-			fmt.Printf("%s: %d\n", "PollCount", metricsReadCounter)
+			fmt.Printf("%s: %d", "PollCount", metricsReadCounter)
 			sendMetric("counter", "PollCount", metricsReadCounter, cfg)
 
 			// отправляем рандомное число

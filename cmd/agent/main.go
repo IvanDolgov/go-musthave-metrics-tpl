@@ -62,50 +62,53 @@ func run(cfg Config) error {
 	// Подсчет количество запусков сбора метрик
 	var metricsReadCounter int
 
+	// go func() {
+	// 	for {
+	// 		metricsReadCounter++
+	// 		fmt.Println("Get metrics", time.Now().Format("15:04:05"))
+	// 		// Прочитать метрики без имен
+	// 		// metrics.Read(need_metrics)
+
+	// 		// Прочитать метрики с условиями, что там имена лежат отдельно
+	// 		for i := range metricsWithNames {
+	// 			metrics.Read([]metrics.Sample{metricsWithNames[i].Sample})
+	// 		}
+
+	// 		time.Sleep(time.Duration(cfg.PollInterval))
+	// 	}
+	// }()
+
+	// time.Sleep(1 * time.Second)
+
 	go func() {
 		for {
-			metricsReadCounter++
-			fmt.Println("Get metrics", time.Now().Format("15:04:05"))
-			// Прочитать метрики без имен
-			// metrics.Read(need_metrics)
-
-			// Прочитать метрики с условиями, что там имена лежат отдельно
-			for i := range metricsWithNames {
-				metrics.Read([]metrics.Sample{metricsWithNames[i].Sample})
-			}
-
-			time.Sleep(time.Duration(cfg.PollInterval))
-		}
-	}()
-
-	time.Sleep(1 * time.Second)
-
-	go func() {
-		for {
-			fmt.Println("Send metrics", time.Now().Format("15:04:05"))
+			metricsReadCounter++ // перенесем сюда инкремент счетчика
+			fmt.Println("Get and send metrics", time.Now().Format("15:04:05"))
 			fmt.Println(cfg.Address)
-			// Обработать результаты
+
+			// Собираем и отправляем метрики
 			for _, metric := range metricsWithNames {
-				fmt.Printf("%s: ", metric.ShortName) // _ -> i
+				metrics.Read([]metrics.Sample{metric.Sample})
+
+				fmt.Printf("%s: ", metric.ShortName)
 				var value float64
 				switch metric.Sample.Value.Kind() {
 				case metrics.KindUint64:
 					value = float64(metric.Sample.Value.Uint64())
 				case metrics.KindFloat64:
 					value = metric.Sample.Value.Float64()
-
 				}
 				fmt.Printf("%f\n", value)
 				sendMetric("gauge", metric.ShortName, value, cfg)
-
 			}
+
 			// отправляем счетчик
-			fmt.Printf("%s: %d", "PollCount", metricsReadCounter)
+			fmt.Printf("%s: %d\n", "PollCount", metricsReadCounter)
 			sendMetric("counter", "PollCount", metricsReadCounter, cfg)
 
 			// отправляем рандомное число
 			RandomValue := rand.Float64() * 100
-			fmt.Printf("%s: %f", "RandomValue", RandomValue)
+			fmt.Printf("%s: %f\n", "RandomValue", RandomValue)
 			sendMetric("gauge", "RandomValue", RandomValue, cfg)
 
 			time.Sleep(time.Duration(cfg.ReportInterval))

@@ -148,36 +148,62 @@ func sendMetric(metricType string, name string, value interface{}, cfg Config) {
 				Value: &floatValue,
 			}
 		} else {
-			fmt.Printf("Invalid gauge value type: %T\n", value)
-			return
+			// Пробуем конвертировать другие числовые типы в float64
+			switch v := value.(type) {
+			case int:
+				floatValue := float64(v)
+				metric = Metrics{
+					ID:    name,
+					MType: metricType,
+					Value: &floatValue,
+				}
+			case int64:
+				floatValue := float64(v)
+				metric = Metrics{
+					ID:    name,
+					MType: metricType,
+					Value: &floatValue,
+				}
+			default:
+				fmt.Printf("Invalid gauge value type: %T for metric %s\n", value, name)
+				return
+			}
 		}
 	case "counter":
-		if intValue, ok := value.(int64); ok {
-			metric = Metrics{
-				ID:    name,
-				MType: metricType,
-				Delta: &intValue,
-			}
-		} else {
-			fmt.Printf("Invalid counter value type: %T\n", value)
+		// Для counter всегда используем int64
+		var intValue int64
+		switch v := value.(type) {
+		case int:
+			intValue = int64(v)
+		case int64:
+			intValue = v
+		case float64:
+			intValue = int64(v)
+		default:
+			fmt.Printf("Invalid counter value type: %T for metric %s\n", value, name)
 			return
 		}
+		metric = Metrics{
+			ID:    name,
+			MType: metricType,
+			Delta: &intValue,
+		}
 	default:
-		fmt.Printf("Unknown metric type: %s\n", metricType)
+		fmt.Printf("Unknown metric type: %s for metric %s\n", metricType, name)
 		return
 	}
 
 	// Кодируем метрику в JSON
 	jsonData, err := json.Marshal(metric)
 	if err != nil {
-		fmt.Println("Error encoding JSON:", err)
+		fmt.Printf("Error encoding JSON for metric %s: %v\n", name, err)
 		return
 	}
 
 	// Отправляем POST запрос с JSON
 	response, err := http.Post(endpoint, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
-		fmt.Println("Error sending metric:", err)
+		fmt.Printf("Error sending metric %s: %v\n", name, err)
 		return
 	}
 
@@ -185,14 +211,14 @@ func sendMetric(metricType string, name string, value interface{}, cfg Config) {
 
 	// Проверяем статус ответа
 	if response.StatusCode != http.StatusOK {
-		fmt.Printf("Server returned non-OK status: %d\n", response.StatusCode)
+		fmt.Printf("Server returned non-OK status for metric %s: %d\n", name, response.StatusCode)
 		return
 	}
 
 	// Читаем и выводим ответ (опционально)
 	var responseMetric Metrics
 	if err := json.NewDecoder(response.Body).Decode(&responseMetric); err != nil {
-		fmt.Println("Error decoding response:", err)
+		fmt.Printf("Error decoding response for metric %s: %v\n", name, err)
 		return
 	}
 

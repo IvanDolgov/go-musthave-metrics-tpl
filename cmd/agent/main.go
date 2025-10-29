@@ -179,7 +179,7 @@ func sendMetric(metricType string, name string, value interface{}, cfg Config) {
 	// Сжимаем данные
 	compressedData, err := GzipCompress(jsonData)
 	if err != nil {
-		fmt.Errorf("gzip compress error: %w", err)
+		fmt.Println("gzip compress error: %w", err)
 		return
 	}
 

@@ -176,13 +176,32 @@ func sendMetric(metricType string, name string, value interface{}, cfg Config) {
 		return
 	}
 
+	// Сжимаем данные
+	compressedData, err := GzipCompress(jsonData)
+	if err != nil {
+		fmt.Errorf("gzip compress error: %w", err)
+		return
+	}
+
 	// Создаем клиент с таймаутом
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 	}
 
-	// Отправляем POST запрос с JSON
-	response, err := client.Post(endpoint, "application/json", bytes.NewBuffer(jsonData))
+	// Создаем запрос
+	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(compressedData))
+	if err != nil {
+		fmt.Printf("Error creating request for %s: %v\n", name, err)
+		return
+	}
+
+	// Устанавливаем правильные заголовки для REQUEST
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("Accept-Encoding", "gzip")
+
+	// Отправляем запрос
+	response, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("Error sending metric %s: %v\n", name, err)
 		return

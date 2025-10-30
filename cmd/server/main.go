@@ -125,21 +125,12 @@ func withLogging(h http.Handler) http.Handler {
 // withGzip добавляет сжатие
 func withGzip(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		logger.Log.Debug("GZIP middleware started",
-			zap.String("uri", r.RequestURI),
-			zap.String("content-encoding", r.Header.Get("Content-Encoding")),
-			zap.String("accept-encoding", r.Header.Get("Accept-Encoding")),
-		)
-
 		ow := w
 
-		// 1. ВСЕГДА проверяем входящее сжатие (для любых запросов)
-		contentEncoding := r.Header.Get("Content-Encoding")
-		sendsGzip := strings.Contains(contentEncoding, "gzip")
-		if sendsGzip {
+		// Всегда распаковываем входящие сжатые данные
+		if r.Header.Get("Content-Encoding") == "gzip" {
 			cr, err := newCompressReader(r.Body)
 			if err != nil {
-				logger.Log.Error("Failed to create compress reader", zap.Error(err))
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
@@ -147,19 +138,13 @@ func withGzip(h http.Handler) http.Handler {
 			defer cr.Close()
 		}
 
-		// 2. Проверяем исходящее сжатие ТОЛЬКО для поддерживаемых типов
-		// Но мы еще не знаем Content-Type ответа, поэтому оборачиваем в специальный writer
-		acceptEncoding := r.Header.Get("Accept-Encoding")
-		supportsGzip := strings.Contains(acceptEncoding, "gzip")
-
-		if supportsGzip {
-			// Создаем умный compress writer, который решит сжимать или нет
-			cw := newSmartCompressWriter(w)
+		// Всегда сжимаем исходящие данные если клиент поддерживает
+		if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			cw := newCompressWriter(w)
 			ow = cw
 			defer cw.Close()
 		}
 
-		// передаём управление хендлеру
 		h.ServeHTTP(ow, r)
 	})
 }

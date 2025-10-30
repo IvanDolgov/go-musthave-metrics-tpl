@@ -206,8 +206,8 @@ func TestSummaryMetrics(t *testing.T) {
 
 			// Проверяем Content-Type
 			contentType := rr.Header().Get("Content-Type")
-			if contentType != "text/plain" {
-				t.Errorf("Неожиданный Content-Type: получили %v хотели text/plain", contentType)
+			if contentType != "text/html" {
+				t.Errorf("Неожиданный Content-Type: получили %v хотели text/html", contentType)
 			}
 		})
 	}

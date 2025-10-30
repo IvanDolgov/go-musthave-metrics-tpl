@@ -56,7 +56,7 @@ func summaryMetrics(storage *MemStorage) http.HandlerFunc {
 			response.WriteString(fmt.Sprintf("%s: %v\n", key, value))
 		}
 
-		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Type", "text/html")
 		w.Write([]byte(response.String()))
 	}
 }
@@ -69,7 +69,7 @@ func getMetrics(storage *MemStorage) http.HandlerFunc {
 			return
 		}
 		// установим правильный заголовок для типа данных
-		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Type", "text/html")
 
 		metricType := chi.URLParam(req, "type_metric")
 		name := chi.URLParam(req, "metric")

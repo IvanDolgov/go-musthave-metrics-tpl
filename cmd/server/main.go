@@ -21,20 +21,12 @@ type Metrics struct {
 
 // run запускает приложение с переданной конфигурацией
 func run(cfg Config) error {
-	// создаем хранилище
-	storage := NewMemStorage()
-
-	// Загружаем метрики из файла при старте, если указано в конфиге
-	if cfg.Restore {
-		if err := storage.LoadFromFile(cfg.FileStoragePath); err != nil {
-			logger.Log.Warn("Failed to load metrics from file", zap.String("file", cfg.FileStoragePath), zap.Error(err))
-		} else {
-			logger.Log.Info("Metrics loaded from file", zap.String("file", cfg.FileStoragePath))
-		}
-	}
 
 	// создаем строку с сервером или без
 	fullPathServer := buildServerAddress(cfg.Server, cfg.Port)
+
+	// создаем хранилище
+	storage := NewMemStorage()
 
 	// создаем роутер
 	router := chi.NewRouter()
@@ -45,12 +37,7 @@ func run(cfg Config) error {
 	// Добавляем middleware сжатия gzip для всех маршрутов
 	router.Use(withGzip)
 
-	// Добавляем middleware для синхронного сохранения если StoreInterval = 0
-	if cfg.StoreInterval == 0 {
-		router.Use(storage.withSyncSave(cfg.FileStoragePath))
-	}
-
-	// список ручек (используем обычные обработчики)
+	// список ручек
 	router.Get(`/`, summaryMetrics(storage))
 	router.Post("/update/{type_metric}//{value_metric}", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Metric name cannot be empty", http.StatusNotFound)
@@ -67,30 +54,8 @@ func run(cfg Config) error {
 	router.Get(`/value/{type_metric}/{metric}`, sendMetrics(storage))
 	router.Get(`/value/{type_metric}/{metric}/`, sendMetrics(storage))
 
-	// ГОРУТИНА сохранения МЕТРИК (с интервалом StoreInterval) - только для асинхронного режима
-	if cfg.StoreInterval > 0 {
-		go func() {
-			ticker := time.NewTicker(time.Duration(cfg.StoreInterval) * time.Second)
-			defer ticker.Stop()
-
-			for range ticker.C {
-				if err := storage.SaveToFile(cfg.FileStoragePath); err != nil {
-					logger.Log.Error("Failed to save metrics to file", zap.String("file", cfg.FileStoragePath), zap.Error(err))
-				} else {
-					logger.Log.Debug("Metrics saved to file", zap.String("file", cfg.FileStoragePath))
-				}
-			}
-		}()
-	}
-
 	// логируем запуск сервера
-	logger.Log.Info("Starting server",
-		zap.String("address", fullPathServer),
-		zap.Int64("store_interval", cfg.StoreInterval),
-		zap.String("file_storage_path", cfg.FileStoragePath),
-		zap.Bool("restore", cfg.Restore),
-		zap.Bool("sync_mode", cfg.StoreInterval == 0),
-	)
+	logger.Log.Info("Starting server", zap.String("address", fullPathServer))
 
 	err := http.ListenAndServe(fullPathServer, router)
 	if err != nil {

@@ -125,11 +125,16 @@ func withLogging(h http.Handler) http.Handler {
 // withGzip добавляет сжатие
 func withGzip(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		logger.Log.Debug("GZIP middleware",
+			zap.String("uri", r.RequestURI),
+			zap.String("content-encoding", r.Header.Get("Content-Encoding")),
+			zap.String("accept-encoding", r.Header.Get("Accept-Encoding")),
+		)
 		// по умолчанию устанавливаем оригинальный http.ResponseWriter как тот,
 		// который будем передавать следующей функции
 		ow := w
 
-		contentType := ow.Header().Get("Content-Type")
+		contentType := r.Header.Get("Content-Type")
 
 		// Сжимаем только JSON и HTML
 		if strings.Contains(contentType, "application/json") ||

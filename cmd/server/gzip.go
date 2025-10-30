@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"io"
 	"net/http"
+	"strings"
 )
 
 // compressWriter реализует интерфейс http.ResponseWriter и позволяет прозрачно для сервера
@@ -68,4 +69,54 @@ func (c *compressReader) Close() error {
 		return err
 	}
 	return c.zr.Close()
+}
+
+// smartCompressWriter сжимает только определенные типы контента
+type smartCompressWriter struct {
+	w              http.ResponseWriter
+	zw             *gzip.Writer
+	shouldCompress bool
+}
+
+func newSmartCompressWriter(w http.ResponseWriter) *smartCompressWriter {
+	return &smartCompressWriter{
+		w:  w,
+		zw: gzip.NewWriter(w),
+	}
+}
+
+func (c *smartCompressWriter) Header() http.Header {
+	return c.w.Header()
+}
+
+func (c *smartCompressWriter) Write(p []byte) (int, error) {
+	// Проверяем Content-Type ответа чтобы решить, сжимать или нет
+	contentType := c.w.Header().Get("Content-Type")
+	c.shouldCompress = strings.Contains(contentType, "application/json") ||
+		strings.Contains(contentType, "text/html")
+
+	if c.shouldCompress {
+		return c.zw.Write(p)
+	}
+	// Если не нужно сжимать - пишем напрямую
+	return c.w.Write(p)
+}
+
+func (c *smartCompressWriter) WriteHeader(statusCode int) {
+	// Устанавливаем Content-Encoding только если будем сжимать
+	contentType := c.w.Header().Get("Content-Type")
+	c.shouldCompress = strings.Contains(contentType, "application/json") ||
+		strings.Contains(contentType, "text/html")
+
+	if c.shouldCompress && statusCode < 300 {
+		c.w.Header().Set("Content-Encoding", "gzip")
+	}
+	c.w.WriteHeader(statusCode)
+}
+
+func (c *smartCompressWriter) Close() error {
+	if c.shouldCompress {
+		return c.zw.Close()
+	}
+	return nil
 }

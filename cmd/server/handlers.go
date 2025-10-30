@@ -56,7 +56,7 @@ func summaryMetrics(storage *MemStorage) http.HandlerFunc {
 			response.WriteString(fmt.Sprintf("%s: %v\n", key, value))
 		}
 
-		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write([]byte(response.String()))
 	}
 }

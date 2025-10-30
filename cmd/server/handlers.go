@@ -8,8 +8,34 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/go-chi/chi/v5"
+	"go.uber.org/zap"
 )
+
+// getMetricsWithSync возвращает обработчик с синхронным сохранением
+func getMetricsWithSync(storage *MemStorage, filePath string) http.HandlerFunc {
+	handler := getMetrics(storage)
+	return func(w http.ResponseWriter, req *http.Request) {
+		handler(w, req)
+		// Синхронно сохраняем после обновления метрик
+		if err := storage.SaveToFile(filePath); err != nil {
+			logger.Log.Error("Failed to sync save metrics", zap.String("file", filePath), zap.Error(err))
+		}
+	}
+}
+
+// getJSONMetricWithSync возвращает обработчик с синхронным сохранением
+func getJSONMetricWithSync(storage *MemStorage, filePath string) http.HandlerFunc {
+	handler := getJSONMetric(storage)
+	return func(w http.ResponseWriter, req *http.Request) {
+		handler(w, req)
+		// Синхронно сохраняем после обновления метрик
+		if err := storage.SaveToFile(filePath); err != nil {
+			logger.Log.Error("Failed to sync save metrics", zap.String("file", filePath), zap.Error(err))
+		}
+	}
+}
 
 func sendMetrics(storage *MemStorage) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {

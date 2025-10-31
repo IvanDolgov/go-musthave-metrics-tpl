@@ -13,14 +13,16 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	models "github.com/IvanDolgov/go-musthave-metrics-tpl/internal/model"
 )
 
-type Metrics struct {
-	ID    string   `json:"id"`              // имя метрики
-	MType string   `json:"type"`            // параметр, принимающий значение gauge или counter
-	Delta *int64   `json:"delta,omitempty"` // значение метрики в случае передачи counter
-	Value *float64 `json:"value,omitempty"` // значение метрики в случае передачи gauge
-}
+// type Metrics struct {
+// 	ID    string   `json:"id"`              // имя метрики
+// 	MType string   `json:"type"`            // параметр, принимающий значение gauge или counter
+// 	Delta *int64   `json:"delta,omitempty"` // значение метрики в случае передачи counter
+// 	Value *float64 `json:"value,omitempty"` // значение метрики в случае передачи gauge
+// }
 
 // Структура для хранения текущих метрик
 type CurrentMetrics struct {
@@ -133,13 +135,13 @@ func sendMetric(metricType string, name string, value interface{}, cfg Config) {
 	endpoint := fmt.Sprintf("http://%s/update", fullPathServer)
 
 	// Создаем структуру для метрики с значением
-	var metric Metrics
+	var metric models.Metrics
 
 	// Заполняем метрику в зависимости от типа
 	switch metricType {
 	case "gauge":
 		if floatValue, ok := value.(float64); ok {
-			metric = Metrics{
+			metric = models.Metrics{
 				ID:    name,
 				MType: metricType,
 				Value: &floatValue,
@@ -159,7 +161,7 @@ func sendMetric(metricType string, name string, value interface{}, cfg Config) {
 			fmt.Printf("Invalid counter value type: %T\n", value)
 			return
 		}
-		metric = Metrics{
+		metric = models.Metrics{
 			ID:    name,
 			MType: metricType,
 			Delta: &intValue,

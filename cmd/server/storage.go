@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
+	models "github.com/IvanDolgov/go-musthave-metrics-tpl/internal/model"
 	"go.uber.org/zap"
 )
 
@@ -115,14 +116,14 @@ func (m *MemStorage) GetMetric(name string, metricType MetricType) (interface{},
 	}
 }
 
-func (m *MemStorage) GetMetricForJSON(name string, metricType MetricType) Metrics {
+func (m *MemStorage) GetMetricForJSON(name string, metricType MetricType) models.Metrics {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	switch metricType {
 	case Gauge:
 		if value, exists := m.gauges[name]; exists {
-			return Metrics{
+			return models.Metrics{
 				ID:    name,
 				MType: "gauge",
 				Value: &value,
@@ -130,14 +131,14 @@ func (m *MemStorage) GetMetricForJSON(name string, metricType MetricType) Metric
 		}
 	case Counter:
 		if value, exists := m.counters[name]; exists {
-			return Metrics{
+			return models.Metrics{
 				ID:    name,
 				MType: "counter",
 				Delta: &value,
 			}
 		}
 	}
-	return Metrics{} // возвращаем пустую структуру если метрика не найдена
+	return models.Metrics{} // возвращаем пустую структуру если метрика не найдена
 }
 
 // SaveToFile сохраняет все метрики в файл в формате JSON

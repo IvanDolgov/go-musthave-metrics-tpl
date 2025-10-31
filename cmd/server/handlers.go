@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
+	models "github.com/IvanDolgov/go-musthave-metrics-tpl/internal/model"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
@@ -132,7 +133,7 @@ func getMetrics(storage *MemStorage) http.HandlerFunc {
 
 func getJSONMetric(storage *MemStorage) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		var metric Metrics
+		var metric models.Metrics
 		var buf bytes.Buffer
 
 		if req.Method != http.MethodPost {
@@ -185,7 +186,7 @@ func getJSONMetric(storage *MemStorage) http.HandlerFunc {
 
 func sendJSONMetric(storage *MemStorage) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		var metric Metrics
+		var metric models.Metrics
 		var buf bytes.Buffer
 
 		if req.Method != http.MethodPost {

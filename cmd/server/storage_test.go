@@ -9,19 +9,22 @@ import (
 func TestNewMemStorage(t *testing.T) {
 	storage := NewMemStorage()
 
-	if storage.gauges == nil {
+	// Проверяем через публичные методы, что хранилище пустое
+	gauges, counters := storage.GetAllMetrics()
+
+	if gauges == nil {
 		t.Error("Gauges map should be initialized")
 	}
 
-	if storage.counters == nil {
+	if counters == nil {
 		t.Error("Counters map should be initialized")
 	}
 
-	if len(storage.gauges) != 0 {
+	if len(gauges) != 0 {
 		t.Error("Gauges map should be empty initially")
 	}
 
-	if len(storage.counters) != 0 {
+	if len(counters) != 0 {
 		t.Error("Counters map should be empty initially")
 	}
 }
@@ -32,7 +35,9 @@ func TestSetGauge(t *testing.T) {
 	// тест назначение gauge
 	storage.SetGauge("temperature", 25.5)
 
-	if value, exists := storage.gauges["temperature"]; !exists {
+	// Проверяем через GetMetric
+	value, exists := storage.GetMetric("temperature", models.Gauge)
+	if !exists {
 		t.Error("Gauge 'temperature' should exist")
 	} else if value != 25.5 {
 		t.Errorf("Expected temperature 25.5, got %f", value)
@@ -41,7 +46,10 @@ func TestSetGauge(t *testing.T) {
 	// Test updating existing gauge
 	storage.SetGauge("temperature", 30.0)
 
-	if value := storage.gauges["temperature"]; value != 30.0 {
+	value, exists = storage.GetMetric("temperature", models.Gauge)
+	if !exists {
+		t.Error("Gauge 'temperature' should exist after update")
+	} else if value != 30.0 {
 		t.Errorf("Expected updated temperature 30.0, got %f", value)
 	}
 }
@@ -52,23 +60,30 @@ func TestIncrementCounter(t *testing.T) {
 	// Test incrementing new counter
 	storage.IncrementCounter("requests", 1)
 
-	if value, exists := storage.counters["requests"]; !exists {
+	value, exists := storage.GetMetric("requests", models.Counter)
+	if !exists {
 		t.Error("Counter 'requests' should exist")
-	} else if value != 1 {
+	} else if value != int64(1) {
 		t.Errorf("Expected requests counter 1, got %d", value)
 	}
 
 	// Test incrementing existing counter
 	storage.IncrementCounter("requests", 5)
 
-	if value := storage.counters["requests"]; value != 6 {
+	value, exists = storage.GetMetric("requests", models.Counter)
+	if !exists {
+		t.Error("Counter 'requests' should exist after increment")
+	} else if value != int64(6) {
 		t.Errorf("Expected requests counter 6, got %d", value)
 	}
 
 	// Test negative increment
 	storage.IncrementCounter("errors", -2)
 
-	if value := storage.counters["errors"]; value != -2 {
+	value, exists = storage.GetMetric("errors", models.Counter)
+	if !exists {
+		t.Error("Counter 'errors' should exist")
+	} else if value != int64(-2) {
 		t.Errorf("Expected errors counter -2, got %d", value)
 	}
 }
@@ -275,12 +290,12 @@ func TestMemStorage_GetMetric_NoSideEffects(t *testing.T) {
 		t.Errorf("GetMetric() returned different exists flags: %v vs %v", exists3, exists4)
 	}
 
-	// Проверяем, что оригинальные значения не изменились
-	gauge, counter := storage.GetAllMetrics()
-	if gauge["test"] != 10.5 {
+	// Проверяем, что оригинальные значения не изменились через GetAllMetrics
+	gauges, counters := storage.GetAllMetrics()
+	if gauges["test"] != 10.5 {
 		t.Errorf("Original gauge value was modified")
 	}
-	if counter["count"] != 5 {
+	if counters["count"] != 5 {
 		t.Errorf("Original counter value was modified")
 	}
 }
@@ -316,4 +331,84 @@ func TestMemStorage_GetMetric_TypeAssertions(t *testing.T) {
 	} else if intVal != 42 {
 		t.Errorf("Counter value = %v, want 42", intVal)
 	}
+}
+
+// Новые тесты для GetMetricForJSON
+func TestMemStorage_GetMetricForJSON(t *testing.T) {
+	storage := NewMemStorage()
+	storage.SetGauge("temperature", 25.5)
+	storage.IncrementCounter("requests", 10)
+
+	tests := []struct {
+		name       string
+		metricName string
+		metricType models.MetricType
+		wantID     string
+		wantValue  *float64
+		wantDelta  *int64
+	}{
+		{
+			name:       "Existing gauge metric",
+			metricName: "temperature",
+			metricType: models.Gauge,
+			wantID:     "temperature",
+			wantValue:  floatPtr(25.5),
+			wantDelta:  nil,
+		},
+		{
+			name:       "Existing counter metric",
+			metricName: "requests",
+			metricType: models.Counter,
+			wantID:     "requests",
+			wantValue:  nil,
+			wantDelta:  int64Ptr(10),
+		},
+		{
+			name:       "Non-existing metric",
+			metricName: "nonexistent",
+			metricType: models.Gauge,
+			wantID:     "",
+			wantValue:  nil,
+			wantDelta:  nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := storage.GetMetricForJSON(tt.metricName, tt.metricType)
+
+			if result.ID != tt.wantID {
+				t.Errorf("GetMetricForJSON() ID = %v, want %v", result.ID, tt.wantID)
+			}
+
+			if tt.wantValue != nil {
+				if result.Value == nil || *result.Value != *tt.wantValue {
+					t.Errorf("GetMetricForJSON() Value = %v, want %v", result.Value, tt.wantValue)
+				}
+			} else {
+				if result.Value != nil {
+					t.Errorf("GetMetricForJSON() Value = %v, want nil", result.Value)
+				}
+			}
+
+			if tt.wantDelta != nil {
+				if result.Delta == nil || *result.Delta != *tt.wantDelta {
+					t.Errorf("GetMetricForJSON() Delta = %v, want %v", result.Delta, tt.wantDelta)
+				}
+			} else {
+				if result.Delta != nil {
+					t.Errorf("GetMetricForJSON() Delta = %v, want nil", result.Delta)
+				}
+			}
+		})
+	}
+}
+
+// Вспомогательные функции для создания указателей
+func floatPtr(f float64) *float64 {
+	return &f
+}
+
+func int64Ptr(i int64) *int64 {
+	return &i
 }

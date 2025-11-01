@@ -14,6 +14,7 @@ import (
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/middleware"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
@@ -21,11 +22,11 @@ import (
 // run запускает приложение с переданной конфигурацией
 func run(cfg models.Config) error {
 	// создаем хранилище
-	storage := NewMemStorage()
+	var store storage.Storage = storage.NewMemStorage()
 
 	// Загружаем метрики из файла при старте, если указано в конфиге
 	if cfg.Restore {
-		if err := storage.LoadFromFile(cfg.FileStoragePath); err != nil {
+		if err := store.LoadFromFile(cfg.FileStoragePath); err != nil {
 			logger.Log.Warn("Failed to load metrics from file", zap.String("file", cfg.FileStoragePath), zap.Error(err))
 		} else {
 			logger.Log.Info("Metrics loaded from file", zap.String("file", cfg.FileStoragePath))
@@ -45,26 +46,27 @@ func run(cfg models.Config) error {
 	router.Use(middleware.WithGzip)
 
 	// Добавляем middleware для синхронного сохранения если StoreInterval = 0
+	// Добавляем middleware для синхронного сохранения если StoreInterval = 0
 	if cfg.StoreInterval == 0 {
-		router.Use(storage.withSyncSave(cfg.FileStoragePath))
+		router.Use(middleware.WithSyncSave(store, cfg.FileStoragePath))
 	}
 
 	// список ручек (используем обычные обработчики)
-	router.Get(`/`, summaryMetrics(storage))
+	router.Get(`/`, summaryMetrics(store))
 	router.Post("/update/{type_metric}//{value_metric}", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Metric name cannot be empty", http.StatusNotFound)
 	})
-	router.Post(`/update/{type_metric}/{metric}/{value_metric}`, getMetrics(storage))
-	router.Post(`/update/{type_metric}/{metric}/{value_metric}/`, getMetrics(storage))
+	router.Post(`/update/{type_metric}/{metric}/{value_metric}`, getMetrics(store))
+	router.Post(`/update/{type_metric}/{metric}/{value_metric}/`, getMetrics(store))
 
-	router.Post(`/update`, getJSONMetric(storage))
-	router.Post(`/update/`, getJSONMetric(storage))
+	router.Post(`/update`, getJSONMetric(store))
+	router.Post(`/update/`, getJSONMetric(store))
 
-	router.Post(`/value`, sendJSONMetric(storage))
-	router.Post(`/value/`, sendJSONMetric(storage))
+	router.Post(`/value`, sendJSONMetric(store))
+	router.Post(`/value/`, sendJSONMetric(store))
 
-	router.Get(`/value/{type_metric}/{metric}`, sendMetrics(storage))
-	router.Get(`/value/{type_metric}/{metric}/`, sendMetrics(storage))
+	router.Get(`/value/{type_metric}/{metric}`, sendMetrics(store))
+	router.Get(`/value/{type_metric}/{metric}/`, sendMetrics(store))
 
 	// Создаем HTTP сервер с таймаутами
 	server := &http.Server{
@@ -99,24 +101,21 @@ func run(cfg models.Config) error {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
 
 	// ГОРУТИНА сохранения МЕТРИК (с интервалом StoreInterval) - только для асинхронного режима
-	var ticker *time.Ticker
 	if cfg.StoreInterval > 0 {
-		ticker = time.NewTicker(time.Duration(cfg.StoreInterval) * time.Second)
-		defer ticker.Stop()
-
 		go func() {
-			for {
-				select {
-				case <-ticker.C:
-					if err := storage.SaveToFile(cfg.FileStoragePath); err != nil {
-						logger.Log.Error("Failed to save metrics to file", zap.String("file", cfg.FileStoragePath), zap.Error(err))
-					} else {
-						logger.Log.Debug("Metrics saved to file", zap.String("file", cfg.FileStoragePath))
-					}
-				case <-sigChan:
-					// Останавливаем тикер при получении сигнала
-					ticker.Stop()
-					return
+			ticker := time.NewTicker(time.Duration(cfg.StoreInterval) * time.Second)
+			defer ticker.Stop()
+
+			for range ticker.C {
+				if err := store.SaveToFile(cfg.FileStoragePath); err != nil {
+					logger.Log.Error("Failed to save metrics to file",
+						zap.String("file", cfg.FileStoragePath),
+						zap.Error(err),
+					)
+				} else {
+					logger.Log.Debug("Metrics saved to file",
+						zap.String("file", cfg.FileStoragePath),
+					)
 				}
 			}
 		}()
@@ -129,7 +128,7 @@ func run(cfg models.Config) error {
 
 		// Сохраняем метрики перед завершением
 		logger.Log.Info("Saving metrics before shutdown")
-		if err := storage.SaveToFile(cfg.FileStoragePath); err != nil {
+		if err := store.SaveToFile(cfg.FileStoragePath); err != nil {
 			logger.Log.Error("Failed to save metrics before shutdown", zap.Error(err))
 		} else {
 			logger.Log.Info("Metrics saved successfully before shutdown")

@@ -10,7 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/compress"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/middleware"
 	"github.com/go-chi/chi/v5"
@@ -41,7 +40,7 @@ func run(cfg Config) error {
 	router.Use(middleware.WithLogging)
 
 	// Добавляем middleware сжатия gzip для всех маршрутов
-	router.Use(withGzip)
+	router.Use(middleware.WithGzip)
 
 	// Добавляем middleware для синхронного сохранения если StoreInterval = 0
 	if cfg.StoreInterval == 0 {
@@ -178,31 +177,4 @@ func buildServerAddress(server, port string) string {
 		return ":" + port
 	}
 	return server + ":" + port
-}
-
-// withGzip добавляет сжатие
-func withGzip(h http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ow := w
-
-		// Всегда распаковываем входящие сжатые данные
-		if r.Header.Get("Content-Encoding") == "gzip" {
-			cr, err := compress.NewCompressReader(r.Body)
-			if err != nil {
-				w.WriteHeader(http.StatusBadRequest)
-				return
-			}
-			r.Body = cr
-			defer cr.Close()
-		}
-
-		// Всегда сжимаем исходящие данные если клиент поддерживает
-		if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
-			cw := compress.NewCompressWriter(w)
-			ow = cw
-			defer cw.Close()
-		}
-
-		h.ServeHTTP(ow, r)
-	})
 }

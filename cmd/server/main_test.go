@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/config"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -397,7 +398,7 @@ func TestParseFlags(t *testing.T) {
 			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 
 			// Вызываем тестируемую функцию
-			config := parseFlags()
+			config := config.ParseFlags()
 
 			// Проверяем результаты
 			if config.Address != tt.wantAddress {

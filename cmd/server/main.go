@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/config"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/middleware"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
@@ -156,7 +157,7 @@ func run(cfg models.Config) error {
 
 func main() {
 	// Получаем конфигурацию
-	cfg := parseFlags()
+	cfg := config.ParseFlags()
 
 	// Инициализируем логер с уровнем Info
 	if err := logger.Initialize("info"); err != nil {

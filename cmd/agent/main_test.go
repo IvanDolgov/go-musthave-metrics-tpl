@@ -10,6 +10,8 @@ import (
 	"runtime/metrics"
 	"testing"
 	"time"
+
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/config"
 )
 
 // MockRandSource позволяет контролировать случайные числа в тестах
@@ -499,7 +501,7 @@ func TestParseFlags(t *testing.T) {
 			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 
 			// Вызываем тестируемую функцию
-			config := parseFlags()
+			config := config.ParseFlags()
 
 			// Проверяем результаты
 			if config.Address != tt.wantAddress {
@@ -579,7 +581,7 @@ func TestParseFlags_EdgeCases(t *testing.T) {
 
 			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 
-			config := parseFlags()
+			config := config.ParseFlags()
 
 			if config.PollInterval != tt.wantPollInterval {
 				t.Errorf("PollInterval = %v, want %v", config.PollInterval, tt.wantPollInterval)
@@ -609,7 +611,7 @@ func TestParseFlags_NumberParsing(t *testing.T) {
 
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 
-	config := parseFlags()
+	config := config.ParseFlags()
 
 	// Должен использоваться флаг, так как значение окружения некорректное
 	if config.PollInterval != 5*time.Second {
@@ -636,6 +638,6 @@ func BenchmarkParseFlags(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
-		parseFlags()
+		config.ParseFlags()
 	}
 }

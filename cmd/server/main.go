@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/compress"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
@@ -215,7 +216,7 @@ func withGzip(h http.Handler) http.Handler {
 
 		// Всегда распаковываем входящие сжатые данные
 		if r.Header.Get("Content-Encoding") == "gzip" {
-			cr, err := newCompressReader(r.Body)
+			cr, err := compress.NewCompressReader(r.Body)
 			if err != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				return
@@ -226,7 +227,7 @@ func withGzip(h http.Handler) http.Handler {
 
 		// Всегда сжимаем исходящие данные если клиент поддерживает
 		if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
-			cw := newCompressWriter(w)
+			cw := compress.NewCompressWriter(w)
 			ow = cw
 			defer cw.Close()
 		}

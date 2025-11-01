@@ -1,20 +1,44 @@
-package main
+package compress
 
 import (
+	"bytes"
 	"compress/gzip"
 	"io"
 	"net/http"
 )
 
+// GzipCompress сжимает данные в gzip
+func GzipCompress(data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+
+	// Используем defer для гарантированного закрытия writer даже при ошибках
+	defer gz.Close()
+
+	if _, err := gz.Write(data); err != nil {
+		return nil, err
+	}
+
+	// Явно закрываем writer для финализации данных
+	if err := gz.Close(); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
+}
+
 // compressWriter реализует интерфейс http.ResponseWriter и позволяет прозрачно для сервера
 // сжимать передаваемые данные и выставлять правильные HTTP-заголовки
 type compressWriter struct {
-	w           http.ResponseWriter
-	zw          *gzip.Writer
+	// Writers - группа связанная с записью данных
+	w  http.ResponseWriter
+	zw *gzip.Writer
+
+	// State - группа связанная с состоянием writer
 	wroteHeader bool
 }
 
-func newCompressWriter(w http.ResponseWriter) *compressWriter {
+func NewCompressWriter(w http.ResponseWriter) *compressWriter {
 	return &compressWriter{
 		w:  w,
 		zw: gzip.NewWriter(w),
@@ -50,11 +74,12 @@ func (c *compressWriter) Close() error {
 // compressReader реализует интерфейс io.ReadCloser и позволяет прозрачно для сервера
 // декомпрессировать получаемые от клиента данные
 type compressReader struct {
+	// Readers - группа связанная с чтением данных
 	r  io.ReadCloser
 	zr *gzip.Reader
 }
 
-func newCompressReader(r io.ReadCloser) (*compressReader, error) {
+func NewCompressReader(r io.ReadCloser) (*compressReader, error) {
 	zr, err := gzip.NewReader(r)
 	if err != nil {
 		return nil, err
@@ -66,13 +91,15 @@ func newCompressReader(r io.ReadCloser) (*compressReader, error) {
 	}, nil
 }
 
-func (c compressReader) Read(p []byte) (n int, err error) {
+func (c *compressReader) Read(p []byte) (n int, err error) {
 	return c.zr.Read(p)
 }
 
 func (c *compressReader) Close() error {
-	if err := c.r.Close(); err != nil {
+	// Закрываем оба reader'а, порядок важен
+	if err := c.zr.Close(); err != nil {
+		c.r.Close() // все равно пытаемся закрыть оригинальный reader
 		return err
 	}
-	return c.zr.Close()
+	return c.r.Close()
 }

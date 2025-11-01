@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/compress"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	models "github.com/IvanDolgov/go-musthave-metrics-tpl/internal/model"
 	"go.uber.org/zap"
@@ -186,7 +187,7 @@ func sendMetric(metricType string, name string, value interface{}, cfg Config) e
 	}
 
 	// Сжимаем данные
-	compressedData, err := GzipCompress(jsonData)
+	compressedData, err := compress.GzipCompress(jsonData)
 	if err != nil {
 		return fmt.Errorf("gzip compress error: %w", err)
 	}

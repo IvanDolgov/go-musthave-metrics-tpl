@@ -6,17 +6,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
-)
 
-// Config содержит все параметры конфигурации приложения
-type Config struct {
-	Address         string
-	Server          string
-	Port            string
-	StoreInterval   int64
-	FileStoragePath string
-	Restore         bool
-}
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
+)
 
 // getEnvBool получает булево значение из environment variable
 func getEnvBool(key string, defaultVal bool) bool {
@@ -39,7 +31,7 @@ func getEnvInt64(key string, defaultVal int64) int64 {
 }
 
 // parseFlags парсит флаги командной строки и возвращает Config
-func parseFlags() Config {
+func parseFlags() models.Config {
 	var (
 		address         string
 		storeInterval   int64
@@ -84,7 +76,7 @@ func parseFlags() Config {
 	restore = getEnvBool("RESTORE", restore)
 
 	// Создаем и заполняем конфигурацию
-	cfg := Config{
+	cfg := models.Config{
 		Address:         address,
 		StoreInterval:   storeInterval,
 		FileStoragePath: fileStoragePath,

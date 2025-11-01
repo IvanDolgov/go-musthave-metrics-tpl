@@ -8,32 +8,9 @@ import (
 	"sync"
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
-	models "github.com/IvanDolgov/go-musthave-metrics-tpl/internal/model"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 	"go.uber.org/zap"
 )
-
-// MetricType представляет тип метрики
-type MetricType string
-
-const (
-	Gauge   MetricType = "gauge"
-	Counter MetricType = "counter"
-)
-
-// Metric представляет отдельную метрику с именем, значением и типом
-type Metric struct {
-	Name  string      // Имя метрики (уникальный идентификатор)
-	Value interface{} // Значение метрики (может быть разного типа)
-	Type  MetricType  // Тип метрики (gauge или counter)
-}
-
-// FileMetric представляет метрику для сохранения в файл
-type FileMetric struct {
-	ID    string   `json:"id"`
-	Type  string   `json:"type"`
-	Value *float64 `json:"value,omitempty"`
-	Delta *int64   `json:"delta,omitempty"`
-}
 
 // MemStorage - хранилище для метрик в памяти
 // Разделяет метрики по типам для эффективного хранения и доступа
@@ -92,18 +69,18 @@ func (m *MemStorage) GetAllMetrics() (map[string]float64, map[string]int64) {
 
 // GetMetric возвращает метрику по имени и типу
 // Возвращает значение в виде interface{} и флаг существования метрики
-func (m *MemStorage) GetMetric(name string, metricType MetricType) (interface{}, bool) {
+func (m *MemStorage) GetMetric(name string, metricType models.MetricType) (interface{}, bool) {
 	m.mu.RLock() // ставим флаг, что мы читаем из хранилища
 	defer m.mu.RUnlock()
 	switch metricType {
-	case Gauge:
+	case models.Gauge:
 		value, exists := m.gauges[name]
 		// если нет метрики то возвращаем nil
 		if !exists {
 			return nil, false
 		}
 		return value, true
-	case Counter:
+	case models.Counter:
 		value, exists := m.counters[name]
 		// если нет метрики то возвращаем nil
 		if !exists {
@@ -116,12 +93,12 @@ func (m *MemStorage) GetMetric(name string, metricType MetricType) (interface{},
 	}
 }
 
-func (m *MemStorage) GetMetricForJSON(name string, metricType MetricType) models.Metrics {
+func (m *MemStorage) GetMetricForJSON(name string, metricType models.MetricType) models.Metrics {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	switch metricType {
-	case Gauge:
+	case models.Gauge:
 		if value, exists := m.gauges[name]; exists {
 			return models.Metrics{
 				ID:    name,
@@ -129,7 +106,7 @@ func (m *MemStorage) GetMetricForJSON(name string, metricType MetricType) models
 				Value: &value,
 			}
 		}
-	case Counter:
+	case models.Counter:
 		if value, exists := m.counters[name]; exists {
 			return models.Metrics{
 				ID:    name,
@@ -147,12 +124,12 @@ func (m *MemStorage) SaveToFile(filename string) error {
 	defer m.mu.RUnlock()
 
 	// Создаем слайс для хранения всех метрик
-	var metrics []FileMetric
+	var metrics []models.FileMetric
 
 	// Добавляем gauge метрики
 	for name, value := range m.gauges {
 		valueCopy := value
-		metrics = append(metrics, FileMetric{
+		metrics = append(metrics, models.FileMetric{
 			ID:    name,
 			Type:  "gauge",
 			Value: &valueCopy,
@@ -162,7 +139,7 @@ func (m *MemStorage) SaveToFile(filename string) error {
 	// Добавляем counter метрики
 	for name, value := range m.counters {
 		valueCopy := value
-		metrics = append(metrics, FileMetric{
+		metrics = append(metrics, models.FileMetric{
 			ID:    name,
 			Type:  "counter",
 			Delta: &valueCopy,
@@ -193,7 +170,7 @@ func (m *MemStorage) LoadFromFile(filename string) error {
 	}
 
 	// Десериализуем JSON
-	var fileMetrics []FileMetric
+	var fileMetrics []models.FileMetric
 	if err := json.Unmarshal(data, &fileMetrics); err != nil {
 		return err
 	}

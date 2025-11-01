@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
-	models "github.com/IvanDolgov/go-musthave-metrics-tpl/internal/model"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
@@ -43,7 +43,7 @@ func sendMetrics(storage *MemStorage) http.HandlerFunc {
 		metricType := chi.URLParam(req, "type_metric")
 		name := chi.URLParam(req, "metric")
 
-		valueMetric, exists := storage.GetMetric(name, MetricType(metricType))
+		valueMetric, exists := storage.GetMetric(name, models.MetricType(metricType))
 
 		if exists {
 			var message string
@@ -179,7 +179,7 @@ func getJSONMetric(storage *MemStorage) http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 
 		// // Возвращаем обновленную метрику, чтоб понимать удалось ли опубликовать
-		updatedMetric := storage.GetMetricForJSON(metric.ID, MetricType(metric.MType))
+		updatedMetric := storage.GetMetricForJSON(metric.ID, models.MetricType(metric.MType))
 		json.NewEncoder(w).Encode(updatedMetric)
 	}
 }
@@ -207,7 +207,7 @@ func sendJSONMetric(storage *MemStorage) http.HandlerFunc {
 		}
 
 		// Получаем метрику из storage
-		foundMetric := storage.GetMetricForJSON(metric.ID, MetricType(metric.MType))
+		foundMetric := storage.GetMetricForJSON(metric.ID, models.MetricType(metric.MType))
 
 		// Если метрика не найдена
 		if foundMetric.ID == "" {

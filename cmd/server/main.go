@@ -12,12 +12,13 @@ import (
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/middleware"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
 
 // run запускает приложение с переданной конфигурацией
-func run(cfg Config) error {
+func run(cfg models.Config) error {
 	// создаем хранилище
 	storage := NewMemStorage()
 

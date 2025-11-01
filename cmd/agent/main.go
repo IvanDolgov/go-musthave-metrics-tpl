@@ -16,7 +16,7 @@ import (
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/compress"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
-	models "github.com/IvanDolgov/go-musthave-metrics-tpl/internal/model"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 	"go.uber.org/zap"
 )
 
@@ -29,7 +29,7 @@ type CurrentMetrics struct {
 }
 
 // run запускает приложение с переданной конфигурацией
-func run(cfg Config) error {
+func run(cfg models.Config) error {
 	// Канал для сигналов завершения
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
@@ -82,7 +82,7 @@ func run(cfg Config) error {
 	return nil
 }
 
-func sendRuntimeMetrics(cfg Config, pollCount int64, randomValue float64, memStats runtime.MemStats) error {
+func sendRuntimeMetrics(cfg models.Config, pollCount int64, randomValue float64, memStats runtime.MemStats) error {
 	// Отправляем ВСЕ необходимые метрики из автотеста
 	metricsToSend := map[string]float64{
 		// Runtime метрики из memStats
@@ -141,7 +141,7 @@ func sendRuntimeMetrics(cfg Config, pollCount int64, randomValue float64, memSta
 	return nil
 }
 
-func sendMetric(metricType string, name string, value interface{}, cfg Config) error {
+func sendMetric(metricType string, name string, value interface{}, cfg models.Config) error {
 	// Формируем полный адрес сервера
 	fullPathServer := buildServerAddress(cfg.Server, cfg.Port)
 	endpoint := fmt.Sprintf("http://%s/update", fullPathServer)

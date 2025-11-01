@@ -2,6 +2,8 @@ package main
 
 import (
 	"testing"
+
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 )
 
 func TestNewMemStorage(t *testing.T) {
@@ -122,70 +124,70 @@ func TestMemStorage_GetMetric(t *testing.T) {
 	tests := []struct {
 		name       string
 		metricName string
-		metricType MetricType
+		metricType models.MetricType
 		wantValue  interface{}
 		wantExists bool
 	}{
 		{
 			name:       "Existing gauge metric",
 			metricName: "temperature",
-			metricType: Gauge,
+			metricType: models.Gauge,
 			wantValue:  25.5,
 			wantExists: true,
 		},
 		{
 			name:       "Existing counter metric",
 			metricName: "requests",
-			metricType: Counter,
+			metricType: models.Counter,
 			wantValue:  int64(10),
 			wantExists: true,
 		},
 		{
 			name:       "Non-existing gauge metric",
 			metricName: "nonexistent_gauge",
-			metricType: Gauge,
+			metricType: models.Gauge,
 			wantValue:  nil,
 			wantExists: false,
 		},
 		{
 			name:       "Non-existing counter metric",
 			metricName: "nonexistent_counter",
-			metricType: Counter,
+			metricType: models.Counter,
 			wantValue:  nil,
 			wantExists: false,
 		},
 		{
 			name:       "Wrong type for existing metric - gauge as counter",
 			metricName: "temperature",
-			metricType: Counter, // temperature is gauge, not counter
+			metricType: models.Counter, // temperature is gauge, not counter
 			wantValue:  nil,
 			wantExists: false,
 		},
 		{
 			name:       "Wrong type for existing metric - counter as gauge",
 			metricName: "requests",
-			metricType: Gauge, // requests is counter, not gauge
+			metricType: models.Gauge, // requests is counter, not gauge
 			wantValue:  nil,
 			wantExists: false,
 		},
 		{
 			name:       "Another existing gauge metric",
 			metricName: "memory",
-			metricType: Gauge,
+			metricType: models.Gauge,
 			wantValue:  1024.0,
 			wantExists: true,
 		},
 		{
 			name:       "Another existing counter metric",
 			metricName: "errors",
-			metricType: Counter,
+			metricType: models.Counter,
 			wantValue:  int64(2),
 			wantExists: true,
 		},
 		{
 			name:       "Empty metric name",
 			metricName: "",
-			metricType: Gauge,
+			metricType: models.Gauge,
 			wantValue:  nil,
 			wantExists: false,
 		},
@@ -202,11 +204,11 @@ func TestMemStorage_GetMetric(t *testing.T) {
 			if gotExists {
 				// Проверяем значение только если метрика существует
 				switch tt.metricType {
-				case Gauge:
+				case models.Gauge:
 					if gaugeVal, ok := gotValue.(float64); !ok || gaugeVal != tt.wantValue {
 						t.Errorf("GetMetric() gauge value = %v, want %v", gotValue, tt.wantValue)
 					}
-				case Counter:
+				case models.Counter:
 					if counterVal, ok := gotValue.(int64); !ok || counterVal != tt.wantValue {
 						t.Errorf("GetMetric() counter value = %v, want %v", gotValue, tt.wantValue)
 					}
@@ -228,7 +230,7 @@ func TestMemStorage_GetMetric_UnknownType(t *testing.T) {
 	storage.IncrementCounter("test_counter", 1)
 
 	// Создаем невалидный тип метрики
-	unknownType := MetricType("unknown")
+	unknownType := models.MetricType("unknown")
 
 	value, exists := storage.GetMetric("test_gauge", unknownType)
 	if exists {
@@ -254,10 +256,10 @@ func TestMemStorage_GetMetric_NoSideEffects(t *testing.T) {
 	storage.IncrementCounter("count", 5)
 
 	// Получаем метрики несколько раз
-	val1, exists1 := storage.GetMetric("test", Gauge)
-	val2, exists2 := storage.GetMetric("test", Gauge)
-	val3, exists3 := storage.GetMetric("count", Counter)
-	val4, exists4 := storage.GetMetric("count", Counter)
+	val1, exists1 := storage.GetMetric("test", models.Gauge)
+	val2, exists2 := storage.GetMetric("test", models.Gauge)
+	val3, exists3 := storage.GetMetric("count", models.Counter)
+	val4, exists4 := storage.GetMetric("count", models.Counter)
 
 	// Проверяем, что значения consistent
 	if val1 != val2 {
@@ -290,7 +292,7 @@ func TestMemStorage_GetMetric_TypeAssertions(t *testing.T) {
 	storage.IncrementCounter("counter_metric", 42)
 
 	// Проверяем gauge
-	gaugeVal, exists := storage.GetMetric("gauge_metric", Gauge)
+	gaugeVal, exists := storage.GetMetric("gauge_metric", models.Gauge)
 	if !exists {
 		t.Fatal("Gauge metric should exist")
 	}
@@ -303,7 +305,7 @@ func TestMemStorage_GetMetric_TypeAssertions(t *testing.T) {
 	}
 
 	// Проверяем counter
-	counterVal, exists := storage.GetMetric("counter_metric", Counter)
+	counterVal, exists := storage.GetMetric("counter_metric", models.Counter)
 	if !exists {
 		t.Fatal("Counter metric should exist")
 	}

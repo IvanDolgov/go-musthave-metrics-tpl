@@ -7,19 +7,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 )
 
-// Config содержит все параметры конфигурации приложения
-type Config struct {
-	Address        string
-	Server         string
-	Port           string
-	PollInterval   time.Duration
-	ReportInterval time.Duration
-}
-
 // parseFlags парсит флаги командной строки и возвращает Config
-func parseFlags() Config {
+func parseFlags() models.Config {
 	var (
 		address        string
 		pollInterval   int
@@ -71,7 +64,7 @@ func parseFlags() Config {
 	}
 
 	// Создаем и заполняем конфигурацию
-	cfg := Config{
+	cfg := models.Config{
 		Address:        address,
 		PollInterval:   time.Duration(pollInterval) * time.Second,
 		ReportInterval: time.Duration(reportInterval) * time.Second,

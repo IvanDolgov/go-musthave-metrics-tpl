@@ -398,7 +398,7 @@ func TestParseFlags(t *testing.T) {
 			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 
 			// Вызываем тестируемую функцию
-			config := config.ParseFlags()
+			config := config.ParseServerFlags()
 
 			// Проверяем результаты
 			if config.Address != tt.wantAddress {

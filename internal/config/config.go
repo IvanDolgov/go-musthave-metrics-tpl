@@ -10,26 +10,20 @@ import (
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 )
 
-// ParseFlags парсит флаги командной строки и возвращает Config
-func ParseFlags() models.Config {
+// ParseServerFlags парсит флаги командной строки для сервера
+func ParseServerFlags() models.Config {
 	var (
 		address         string
 		storeInterval   int64
 		fileStoragePath string
 		restore         bool
-		pollInterval    time.Duration
-		reportInterval  time.Duration
 	)
 
 	// Регистрируем флаги для сервера
 	flag.StringVar(&address, "a", "localhost:8080", "server address")
-	flag.Int64Var(&storeInterval, "i", 300, "store interval")
-	flag.StringVar(&fileStoragePath, "f", "./.storage", "path storage file")
+	flag.Int64Var(&storeInterval, "i", 300, "store interval in seconds")
+	flag.StringVar(&fileStoragePath, "f", "/storage.json", "path storage file")
 	flag.BoolVar(&restore, "r", true, "upload previous metrics from file")
-
-	// Регистрируем флаги для агента
-	flag.DurationVar(&pollInterval, "p", 2*time.Second, "poll interval")
-	flag.DurationVar(&reportInterval, "report", 10*time.Second, "report interval")
 
 	flag.Parse()
 
@@ -56,8 +50,41 @@ func ParseFlags() models.Config {
 		StoreInterval:   storeInterval,
 		FileStoragePath: fileStoragePath,
 		Restore:         restore,
-		PollInterval:    pollInterval,
-		ReportInterval:  reportInterval,
+	}
+}
+
+// ParseAgentFlags парсит флаги командной строки для агента
+func ParseAgentFlags() models.Config {
+	var (
+		address        string
+		pollInterval   int64 // в секундах для совместимости с тестами
+		reportInterval int64 // в секундах для совместимости с тестами
+	)
+
+	// Регистрируем флаги для агента
+	flag.StringVar(&address, "a", "localhost:8080", "server address")
+	flag.Int64Var(&pollInterval, "p", 2, "poll interval in seconds")
+	flag.Int64Var(&reportInterval, "r", 10, "report interval in seconds")
+
+	flag.Parse()
+
+	// Применяем приоритеты параметров (env vars имеют приоритет над флагами)
+	if envAddress := os.Getenv("ADDRESS"); envAddress != "" {
+		address = envAddress
+	}
+
+	pollInterval = getEnvInt64("POLL_INTERVAL", pollInterval)
+	reportInterval = getEnvInt64("REPORT_INTERVAL", reportInterval)
+
+	// Парсим адрес на server и port
+	server, port := parseAddress(address)
+
+	return models.Config{
+		Address:        address,
+		Server:         server,
+		Port:           port,
+		PollInterval:   time.Duration(pollInterval) * time.Second,
+		ReportInterval: time.Duration(reportInterval) * time.Second,
 	}
 }
 

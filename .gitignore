@@ -16,7 +16,7 @@ cmd/agent/main
 cmd/agent/agent
 cmd/server/main
 cmd/server/server
-cmd/server/file.storage
+cmd/server/storage.json
 
 # Dependency directories (remove the comment below to include it)
 vendor/

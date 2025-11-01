@@ -157,7 +157,7 @@ func run(cfg models.Config) error {
 
 func main() {
 	// Получаем конфигурацию
-	cfg := config.ParseFlags()
+	cfg := config.ParseServerFlags()
 
 	// Инициализируем логер с уровнем Info
 	if err := logger.Initialize("info"); err != nil {

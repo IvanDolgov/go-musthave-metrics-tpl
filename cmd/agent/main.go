@@ -237,7 +237,7 @@ func buildServerAddress(server, port string) string {
 
 func main() {
 	// Получаем конфигурацию
-	cfg := config.ParseFlags()
+	cfg := config.ParseAgentFlags()
 
 	// Инициализируем логер
 	if err := logger.Initialize("info"); err != nil {

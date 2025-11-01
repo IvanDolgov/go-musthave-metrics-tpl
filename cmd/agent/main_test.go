@@ -501,7 +501,7 @@ func TestParseFlags(t *testing.T) {
 			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 
 			// Вызываем тестируемую функцию
-			config := config.ParseFlags()
+			config := config.ParseAgentFlags()
 
 			// Проверяем результаты
 			if config.Address != tt.wantAddress {
@@ -581,7 +581,7 @@ func TestParseFlags_EdgeCases(t *testing.T) {
 
 			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 
-			config := config.ParseFlags()
+			config := config.ParseAgentFlags()
 
 			if config.PollInterval != tt.wantPollInterval {
 				t.Errorf("PollInterval = %v, want %v", config.PollInterval, tt.wantPollInterval)
@@ -611,7 +611,7 @@ func TestParseFlags_NumberParsing(t *testing.T) {
 
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 
-	config := config.ParseFlags()
+	config := config.ParseAgentFlags()
 
 	// Должен использоваться флаг, так как значение окружения некорректное
 	if config.PollInterval != 5*time.Second {
@@ -638,6 +638,6 @@ func BenchmarkParseFlags(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
-		config.ParseFlags()
+		config.ParseAgentFlags()
 	}
 }

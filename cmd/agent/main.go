@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/compress"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/config"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 	"go.uber.org/zap"
@@ -236,7 +237,7 @@ func buildServerAddress(server, port string) string {
 
 func main() {
 	// Получаем конфигурацию
-	cfg := parseFlags()
+	cfg := config.ParseFlags()
 
 	// Инициализируем логер
 	if err := logger.Initialize("info"); err != nil {

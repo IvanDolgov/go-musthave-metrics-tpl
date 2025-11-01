@@ -14,15 +14,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	models "github.com/IvanDolgov/go-musthave-metrics-tpl/internal/model"
+	"go.uber.org/zap"
 )
-
-// type Metrics struct {
-// 	ID    string   `json:"id"`              // имя метрики
-// 	MType string   `json:"type"`            // параметр, принимающий значение gauge или counter
-// 	Delta *int64   `json:"delta,omitempty"` // значение метрики в случае передачи counter
-// 	Value *float64 `json:"value,omitempty"` // значение метрики в случае передачи gauge
-// }
 
 // Структура для хранения текущих метрик
 type CurrentMetrics struct {
@@ -37,10 +32,7 @@ func run(cfg Config) error {
 	// Канал для сигналов завершения
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	fmt.Println("Программа запущена. Нажмите Ctrl+C для остановки")
-
-	// Ждем немного чтобы сервер успел запуститься
-	time.Sleep(2 * time.Second)
+	logger.Log.Info("Программа запущена. Нажмите Ctrl+C для остановки")
 
 	// Текущие метрики
 	currentMetrics := &CurrentMetrics{}
@@ -57,7 +49,7 @@ func run(cfg Config) error {
 			runtime.ReadMemStats(&currentMetrics.MemStats)
 			currentMetrics.mu.Unlock()
 
-			fmt.Printf("Collected metrics batch #%d\n", currentMetrics.PollCount)
+			logger.Log.Debug("Collected metrics batch", zap.Int64("batch_number", currentMetrics.PollCount))
 		}
 	}()
 
@@ -73,18 +65,23 @@ func run(cfg Config) error {
 			memStats := currentMetrics.MemStats
 			currentMetrics.mu.RUnlock()
 
-			fmt.Printf("Sending metrics batch #%d to %s\n", pollCount, cfg.Address)
-			sendRuntimeMetrics(cfg, pollCount, randomValue, memStats)
+			logger.Log.Info("Sending metrics batch",
+				zap.Int64("batch_number", pollCount),
+				zap.String("address", cfg.Address),
+			)
+			if err := sendRuntimeMetrics(cfg, pollCount, randomValue, memStats); err != nil {
+				logger.Log.Error("Error sending metrics", zap.Error(err))
+			}
 		}
 	}()
 
 	// Ждем сигнал завершения
 	<-stop
-	fmt.Println("\nЗавершение программы...")
+	logger.Log.Info("Завершение программы...")
 	return nil
 }
 
-func sendRuntimeMetrics(cfg Config, pollCount int64, randomValue float64, memStats runtime.MemStats) {
+func sendRuntimeMetrics(cfg Config, pollCount int64, randomValue float64, memStats runtime.MemStats) error {
 	// Отправляем ВСЕ необходимые метрики из автотеста
 	metricsToSend := map[string]float64{
 		// Runtime метрики из memStats
@@ -120,16 +117,30 @@ func sendRuntimeMetrics(cfg Config, pollCount int64, randomValue float64, memSta
 		"RandomValue": randomValue,
 	}
 
+	// Собираем ошибки отправки
+	var errors []string
+
 	// Отправляем gauge метрики
 	for name, value := range metricsToSend {
-		sendMetric("gauge", name, value, cfg)
+		if err := sendMetric("gauge", name, value, cfg); err != nil {
+			errors = append(errors, fmt.Sprintf("%s: %v", name, err))
+		}
 	}
 
 	// Отправляем counter метрику
-	sendMetric("counter", "PollCount", pollCount, cfg)
+	if err := sendMetric("counter", "PollCount", pollCount, cfg); err != nil {
+		errors = append(errors, fmt.Sprintf("PollCount: %v", err))
+	}
+
+	// Если были ошибки, возвращаем их
+	if len(errors) > 0 {
+		return fmt.Errorf("failed to send metrics: %s", strings.Join(errors, "; "))
+	}
+
+	return nil
 }
 
-func sendMetric(metricType string, name string, value interface{}, cfg Config) {
+func sendMetric(metricType string, name string, value interface{}, cfg Config) error {
 	// Формируем полный адрес сервера
 	fullPathServer := buildServerAddress(cfg.Server, cfg.Port)
 	endpoint := fmt.Sprintf("http://%s/update", fullPathServer)
@@ -147,8 +158,7 @@ func sendMetric(metricType string, name string, value interface{}, cfg Config) {
 				Value: &floatValue,
 			}
 		} else {
-			fmt.Printf("Invalid gauge value type: %T\n", value)
-			return
+			return fmt.Errorf("invalid gauge value type: %T", value)
 		}
 	case "counter":
 		var intValue int64
@@ -158,8 +168,7 @@ func sendMetric(metricType string, name string, value interface{}, cfg Config) {
 		case int:
 			intValue = int64(v)
 		default:
-			fmt.Printf("Invalid counter value type: %T\n", value)
-			return
+			return fmt.Errorf("invalid counter value type: %T", value)
 		}
 		metric = models.Metrics{
 			ID:    name,
@@ -167,22 +176,19 @@ func sendMetric(metricType string, name string, value interface{}, cfg Config) {
 			Delta: &intValue,
 		}
 	default:
-		fmt.Printf("Unknown metric type: %s\n", metricType)
-		return
+		return fmt.Errorf("unknown metric type: %s", metricType)
 	}
 
 	// Кодируем метрику в JSON
 	jsonData, err := json.Marshal(metric)
 	if err != nil {
-		fmt.Println("Error encoding JSON:", err)
-		return
+		return fmt.Errorf("error encoding JSON: %w", err)
 	}
 
 	// Сжимаем данные
 	compressedData, err := GzipCompress(jsonData)
 	if err != nil {
-		fmt.Println("gzip compress error: %w", err)
-		return
+		return fmt.Errorf("gzip compress error: %w", err)
 	}
 
 	// Создаем клиент с таймаутом
@@ -193,8 +199,7 @@ func sendMetric(metricType string, name string, value interface{}, cfg Config) {
 	// Создаем запрос
 	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(compressedData))
 	if err != nil {
-		fmt.Printf("Error creating request for %s: %v\n", name, err)
-		return
+		return fmt.Errorf("error creating request for %s: %w", name, err)
 	}
 
 	// Устанавливаем правильные заголовки для REQUEST
@@ -205,18 +210,20 @@ func sendMetric(metricType string, name string, value interface{}, cfg Config) {
 	// Отправляем запрос
 	response, err := client.Do(req)
 	if err != nil {
-		fmt.Printf("Error sending metric %s: %v\n", name, err)
-		return
+		return fmt.Errorf("error sending metric %s: %w", name, err)
 	}
 	defer response.Body.Close()
 
 	// Проверяем статус ответа
 	if response.StatusCode != http.StatusOK {
-		fmt.Printf("Server returned non-OK status for %s: %d\n", name, response.StatusCode)
-		return
+		return fmt.Errorf("server returned non-OK status for %s: %d", name, response.StatusCode)
 	}
 
-	fmt.Printf("Successfully sent metric: %s=%v\n", name, value)
+	logger.Log.Debug("Successfully sent metric",
+		zap.String("name", name),
+		zap.Any("value", value),
+	)
+	return nil
 }
 
 func buildServerAddress(server, port string) string {
@@ -230,9 +237,17 @@ func main() {
 	// Получаем конфигурацию
 	cfg := parseFlags()
 
+	// Инициализируем логер
+	if err := logger.Initialize("info"); err != nil {
+		// Если логер не инициализировался, используем fmt для ошибки
+		fmt.Fprintf(os.Stderr, "Logger initialization error: %v\n", err)
+		os.Exit(1)
+	}
+	defer logger.Log.Sync()
+
 	// Запускаем приложение
 	if err := run(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "Application error: %v\n", err)
+		logger.Log.Error("Application error", zap.Error(err))
 		os.Exit(1)
 	}
 }

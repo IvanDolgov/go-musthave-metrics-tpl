@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
@@ -60,37 +63,92 @@ func run(cfg Config) error {
 	router.Get(`/value/{type_metric}/{metric}`, sendMetrics(storage))
 	router.Get(`/value/{type_metric}/{metric}/`, sendMetrics(storage))
 
-	// ГОРУТИНА сохранения МЕТРИК (с интервалом StoreInterval) - только для асинхронного режима
-	if cfg.StoreInterval > 0 {
-		go func() {
-			ticker := time.NewTicker(time.Duration(cfg.StoreInterval) * time.Second)
-			defer ticker.Stop()
+	// Создаем HTTP сервер с таймаутами
+	server := &http.Server{
+		Addr:         fullPathServer,
+		Handler:      router,
+		ReadTimeout:  10 * time.Second,  // время на чтение запроса
+		WriteTimeout: 10 * time.Second,  // время на запись ответа
+		IdleTimeout:  120 * time.Second, // время неактивного соединения
+	}
 
-			for range ticker.C {
-				if err := storage.SaveToFile(cfg.FileStoragePath); err != nil {
-					logger.Log.Error("Failed to save metrics to file", zap.String("file", cfg.FileStoragePath), zap.Error(err))
-				} else {
-					logger.Log.Debug("Metrics saved to file", zap.String("file", cfg.FileStoragePath))
+	// Канал для получения ошибок от сервера
+	serverErr := make(chan error, 1)
+
+	// Запускаем сервер в отдельной горутине
+	go func() {
+		// логируем запуск сервера
+		logger.Log.Info("Starting server",
+			zap.String("address", fullPathServer),
+			zap.Int64("store_interval", cfg.StoreInterval),
+			zap.String("file_storage_path", cfg.FileStoragePath),
+			zap.Bool("restore", cfg.Restore),
+			zap.Bool("sync_mode", cfg.StoreInterval == 0),
+		)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			serverErr <- err
+		}
+		close(serverErr)
+	}()
+
+	// Канал для получения сигналов ОС
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
+
+	// ГОРУТИНА сохранения МЕТРИК (с интервалом StoreInterval) - только для асинхронного режима
+	var ticker *time.Ticker
+	if cfg.StoreInterval > 0 {
+		ticker = time.NewTicker(time.Duration(cfg.StoreInterval) * time.Second)
+		defer ticker.Stop()
+
+		go func() {
+			for {
+				select {
+				case <-ticker.C:
+					if err := storage.SaveToFile(cfg.FileStoragePath); err != nil {
+						logger.Log.Error("Failed to save metrics to file", zap.String("file", cfg.FileStoragePath), zap.Error(err))
+					} else {
+						logger.Log.Debug("Metrics saved to file", zap.String("file", cfg.FileStoragePath))
+					}
+				case <-sigChan:
+					// Останавливаем тикер при получении сигнала
+					ticker.Stop()
+					return
 				}
 			}
 		}()
 	}
 
-	// логируем запуск сервера
-	logger.Log.Info("Starting server",
-		zap.String("address", fullPathServer),
-		zap.Int64("store_interval", cfg.StoreInterval),
-		zap.String("file_storage_path", cfg.FileStoragePath),
-		zap.Bool("restore", cfg.Restore),
-		zap.Bool("sync_mode", cfg.StoreInterval == 0),
-	)
+	// Ожидаем сигнал завершения или ошибку сервера
+	select {
+	case sig := <-sigChan:
+		logger.Log.Info("Received signal, shutting down gracefully", zap.String("signal", sig.String()))
 
-	err := http.ListenAndServe(fullPathServer, router)
-	if err != nil {
+		// Сохраняем метрики перед завершением
+		logger.Log.Info("Saving metrics before shutdown")
+		if err := storage.SaveToFile(cfg.FileStoragePath); err != nil {
+			logger.Log.Error("Failed to save metrics before shutdown", zap.Error(err))
+		} else {
+			logger.Log.Info("Metrics saved successfully before shutdown")
+		}
+
+	case err := <-serverErr:
 		logger.Log.Error("Server error", zap.Error(err))
-		panic(err)
+		return err
 	}
 
+	// Создаем контекст с таймаутом для graceful shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Останавливаем сервер
+	logger.Log.Info("Shutting down server...")
+	if err := server.Shutdown(ctx); err != nil {
+		logger.Log.Error("Server shutdown error", zap.Error(err))
+		return err
+	}
+
+	logger.Log.Info("Server stopped gracefully")
 	return nil
 }
 

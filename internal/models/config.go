@@ -12,4 +12,5 @@ type Config struct {
 	Restore         bool
 	PollInterval    time.Duration // для агента
 	ReportInterval  time.Duration // для агента
+	DatabaseDSN     string
 }

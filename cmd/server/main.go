@@ -15,6 +15,7 @@ import (
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/middleware"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/storage"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/storage/database"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
@@ -23,6 +24,24 @@ import (
 func run(cfg models.Config) error {
 	// создаем хранилище
 	var store storage.Storage = storage.NewMemStorage()
+
+	// Инициализируем database storage для проверки подключения к БД
+	var dbStorage database.DatabaseStorage
+	if cfg.DatabaseDSN != "" {
+		var err error
+		dbStorage, err = database.NewDBStorage(cfg.DatabaseDSN)
+		if err != nil {
+			logger.Log.Error("Failed to connect to database",
+				zap.String("dsn", cfg.DatabaseDSN),
+				zap.Error(err))
+			// Можно продолжить работу без БД, если это допустимо
+		} else {
+			defer dbStorage.Close()
+			logger.Log.Info("Database connection established")
+		}
+	} else {
+		logger.Log.Info("Database DSN not provided, database features disabled")
+	}
 
 	// Загружаем метрики из файла при старте, если указано в конфиге
 	if cfg.Restore {
@@ -67,6 +86,9 @@ func run(cfg models.Config) error {
 
 	router.Get(`/value/{type_metric}/{metric}`, sendMetrics(store))
 	router.Get(`/value/{type_metric}/{metric}/`, sendMetrics(store))
+
+	router.Get(`/ping`, checkConnectDatabase(dbStorage))
+	router.Get(`/ping/`, checkConnectDatabase(dbStorage))
 
 	// Создаем HTTP сервер с таймаутами
 	server := &http.Server{

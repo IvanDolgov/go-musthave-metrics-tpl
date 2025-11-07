@@ -2,18 +2,45 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/storage"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/storage/database"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
+
+// checkConnectDatabase проверяет подключение к базе данных
+func checkConnectDatabase(dbStorage database.DatabaseStorage) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if dbStorage == nil {
+			// Если БД не настроена, возвращаем ошибку
+			http.Error(w, "Database not configured", http.StatusInternalServerError)
+			return
+		}
+
+		// Устанавливаем таймаут для проверки БД
+		ctx, cancel := context.WithTimeout(req.Context(), 5*time.Second)
+		defer cancel()
+
+		// Проверяем соединение с БД
+		if err := dbStorage.Ping(ctx); err != nil {
+			http.Error(w, "Database connection failed", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Database connection successful"))
+	}
+}
 
 // getMetricsWithSync возвращает обработчик с синхронным сохранением
 func getMetricsWithSync(store storage.Storage, filePath string) http.HandlerFunc {

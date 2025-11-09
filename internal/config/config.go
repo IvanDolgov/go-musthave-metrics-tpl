@@ -23,9 +23,9 @@ func ParseServerFlags() models.Config {
 	// Регистрируем флаги для сервера
 	flag.StringVar(&address, "a", "localhost:8080", "server address")
 	flag.Int64Var(&storeInterval, "i", 300, "store interval in seconds")
-	flag.StringVar(&fileStoragePath, "f", "/storage.json", "path storage file")
+	flag.StringVar(&fileStoragePath, "f", "", "path storage file")
 	flag.BoolVar(&restore, "r", true, "upload previous metrics from file")
-	flag.StringVar(&databaseDsn, "d", "localhost:5432", "database_dsn")
+	flag.StringVar(&databaseDsn, "d", "", "database_dsn")
 
 	flag.Parse()
 

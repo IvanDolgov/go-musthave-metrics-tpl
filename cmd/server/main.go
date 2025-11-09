@@ -34,13 +34,12 @@ func run(cfg models.Config) error {
 		logger.Log.Info("Using PostgreSQL storage", zap.String("dsn", cfg.DatabaseDSN))
 		pgStorage, err := postgres.NewPostgresStorage(cfg.DatabaseDSN)
 		if err != nil {
-			logger.Log.Error("Failed to initialize PostgreSQL storage, falling back to file storage",
-				zap.Error(err))
-		} else {
-			store = pgStorage
-			dbStorage = pgStorage
-			defer pgStorage.Close()
+			// ВОЗВРАЩАЕМ ОШИБКУ НЕМЕДЛЕННО
+			return fmt.Errorf("failed to initialize PostgreSQL storage: %w", err)
 		}
+		store = pgStorage
+		dbStorage = pgStorage
+		defer pgStorage.Close()
 	}
 
 	// Если PostgreSQL не инициализирован, проверяем file storage

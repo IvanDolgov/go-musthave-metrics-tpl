@@ -62,6 +62,11 @@ func applyMigrations(db *sql.DB) error {
 		appliedVersions[version] = true
 	}
 
+	// ДОБАВЛЯЕМ ПРОВЕРКУ rows.Err()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("error iterating applied migrations: %w", err)
+	}
+
 	// Применяем миграции по порядку
 	for _, migration := range migrations {
 		if appliedVersions[migration.Version] {

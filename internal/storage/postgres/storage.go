@@ -31,7 +31,6 @@ type Storage interface {
 // PostgresStorage реализация Storage для PostgreSQL
 type PostgresStorage struct {
 	db *sql.DB
-	DB *sql.DB // публичное поле для утилиты миграций
 }
 
 // NewPostgresStorage создает новое подключение к PostgreSQL
@@ -56,7 +55,7 @@ func NewPostgresStorage(connectionString string) (Storage, error) {
 	}
 
 	// Применяем миграции
-	if err := ApplyMigrations(db); err != nil { // Используем публичную функцию
+	if err := ApplyMigrations(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to apply migrations: %w", err)
 	}
@@ -146,6 +145,10 @@ func (s *PostgresStorage) GetAllMetrics() (map[string]float64, map[string]int64)
 				gauges[name] = value
 			}
 		}
+		// Проверяем ошибки после итерации
+		if err := rows.Err(); err != nil {
+			fmt.Printf("Error reading gauge metrics: %v\n", err)
+		}
 	}
 
 	// Получаем counter метрики
@@ -158,6 +161,10 @@ func (s *PostgresStorage) GetAllMetrics() (map[string]float64, map[string]int64)
 			if err := rows.Scan(&name, &value); err == nil {
 				counters[name] = value
 			}
+		}
+		// Проверяем ошибки после итерации
+		if err := rows.Err(); err != nil {
+			fmt.Printf("Error reading counter metrics: %v\n", err)
 		}
 	}
 
@@ -216,15 +223,4 @@ func (s *PostgresStorage) Close() error {
 // Ping проверяет соединение с БД
 func (s *PostgresStorage) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
-}
-
-// NewPostgresStorageWithDB создает PostgresStorage с уже подключенной БД
-// (для утилиты миграций)
-func NewPostgresStorageWithDB(db *sql.DB) (Storage, error) {
-	// Применяем миграции
-	if err := applyMigrations(db); err != nil {
-		return nil, fmt.Errorf("failed to apply migrations: %w", err)
-	}
-
-	return &PostgresStorage{db: db}, nil
 }

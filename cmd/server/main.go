@@ -88,8 +88,13 @@ func run(cfg models.Config) error {
 	// Инициализируем database storage для проверки подключения к БД
 	var dbStorage database.DatabaseStorage
 	if cfg.DatabaseDSN != "" {
-		dbStorage, _ = database.NewDBStorage(cfg.DatabaseDSN)
-		if dbStorage != nil {
+		var err error
+		dbStorage, err = database.NewDBStorage(cfg.DatabaseDSN)
+		if err != nil {
+			logger.Log.Error("Failed to initialize database storage for ping endpoint",
+				zap.Error(err))
+			// dbStorage останется nil
+		} else {
 			defer dbStorage.Close()
 		}
 	}

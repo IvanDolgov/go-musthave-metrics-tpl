@@ -26,7 +26,7 @@ type DBStorage struct {
 }
 
 // NewDBStorage создает новое подключение к PostgreSQL
-func NewDBStorage(connectionString string) (*DBStorage, error) {
+func NewDBStorage(connectionString string) (DatabaseStorage, error) {
 	db, err := sql.Open("pgx", connectionString)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)

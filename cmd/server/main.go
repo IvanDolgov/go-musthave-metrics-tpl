@@ -92,8 +92,11 @@ func run(cfg models.Config) error {
 	router.Post(`/update/{type_metric}/{metric}/{value_metric}`, getMetrics(store))
 	router.Post(`/update/{type_metric}/{metric}/{value_metric}/`, getMetrics(store))
 
-	router.Post(`/update`, getJSONMetric(store))
-	router.Post(`/update/`, getJSONMetric(store))
+	// router.Post(`/update`, getJSONMetric(store))
+	// router.Post(`/update/`, getJSONMetric(store))
+
+	router.Post(`/updates`, updateMetricsBatch(store))
+	router.Post(`/updates/`, updateMetricsBatch(store))
 
 	router.Post(`/value`, sendJSONMetric(store))
 	router.Post(`/value/`, sendJSONMetric(store))

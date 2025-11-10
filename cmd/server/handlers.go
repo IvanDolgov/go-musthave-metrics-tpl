@@ -248,3 +248,71 @@ func sendJSONMetric(store storage.Storage) http.HandlerFunc {
 		json.NewEncoder(w).Encode(foundMetric)
 	}
 }
+
+// updateMetricsBatch обрабатывает батчевое обновление метрик
+func updateMetricsBatch(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var metrics []models.Metrics
+		var buf bytes.Buffer
+
+		// Читаем тело запроса
+		_, err := buf.ReadFrom(req.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Декодируем JSON
+		if err = json.Unmarshal(buf.Bytes(), &metrics); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Проверяем, что батч не пустой
+		if len(metrics) == 0 {
+			http.Error(w, "Empty metrics batch", http.StatusBadRequest)
+			return
+		}
+
+		// Обрабатываем все метрики в батче
+		for _, metric := range metrics {
+			switch metric.MType {
+			case "gauge":
+				if metric.Value == nil {
+					http.Error(w, "Missing value for gauge metric", http.StatusBadRequest)
+					return
+				}
+				store.SetGauge(metric.ID, *metric.Value)
+
+			case "counter":
+				if metric.Delta == nil {
+					http.Error(w, "Missing delta for counter metric", http.StatusBadRequest)
+					return
+				}
+				store.IncrementCounter(metric.ID, *metric.Delta)
+
+			default:
+				http.Error(w, "Invalid metric type: "+metric.MType, http.StatusBadRequest)
+				return
+			}
+		}
+
+		// Устанавливаем заголовки и возвращаем успех
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		// Возвращаем обновленные метрики
+		var updatedMetrics []models.Metrics
+		for _, metric := range metrics {
+			updatedMetric := store.GetMetricForJSON(metric.ID, models.MetricType(metric.MType))
+			updatedMetrics = append(updatedMetrics, updatedMetric)
+		}
+
+		json.NewEncoder(w).Encode(updatedMetrics)
+	}
+}

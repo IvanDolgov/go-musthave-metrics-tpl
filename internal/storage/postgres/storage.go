@@ -26,6 +26,7 @@ type Storage interface {
 	GetMetricForJSON(name string, metricType models.MetricType) models.Metrics
 	SaveToFile(filename string) error
 	LoadFromFile(filename string) error
+	UpdateMetricsBatch(metrics []models.Metrics) error // НОВЫЙ МЕТОД
 }
 
 // PostgresStorage реализация Storage для PostgreSQL
@@ -223,4 +224,70 @@ func (s *PostgresStorage) Close() error {
 // Ping проверяет соединение с БД
 func (s *PostgresStorage) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
+}
+
+// UpdateMetricsBatch обновляет метрики батчем в транзакции
+func (s *PostgresStorage) UpdateMetricsBatch(metrics []models.Metrics) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Начинаем транзакцию
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Подготавливаем запросы для gauge и counter
+	gaugeStmt, err := tx.PrepareContext(ctx, `
+        INSERT INTO gauge_metrics (name, value, updated_at) 
+        VALUES ($1, $2, $3)
+        ON CONFLICT (name) 
+        DO UPDATE SET value = $2, updated_at = $3
+    `)
+	if err != nil {
+		return fmt.Errorf("failed to prepare gauge statement: %w", err)
+	}
+	defer gaugeStmt.Close()
+
+	counterStmt, err := tx.PrepareContext(ctx, `
+        INSERT INTO counter_metrics (name, value, updated_at) 
+        VALUES ($1, $2, $3)
+        ON CONFLICT (name) 
+        DO UPDATE SET value = counter_metrics.value + $2, updated_at = $3
+    `)
+	if err != nil {
+		return fmt.Errorf("failed to prepare counter statement: %w", err)
+	}
+	defer counterStmt.Close()
+
+	// Обрабатываем каждую метрику
+	for _, metric := range metrics {
+		switch metric.MType {
+		case "gauge":
+			if metric.Value == nil {
+				continue
+			}
+			_, err := gaugeStmt.ExecContext(ctx, metric.ID, *metric.Value, time.Now())
+			if err != nil {
+				return fmt.Errorf("failed to update gauge metric %s: %w", metric.ID, err)
+			}
+
+		case "counter":
+			if metric.Delta == nil {
+				continue
+			}
+			_, err := counterStmt.ExecContext(ctx, metric.ID, *metric.Delta, time.Now())
+			if err != nil {
+				return fmt.Errorf("failed to update counter metric %s: %w", metric.ID, err)
+			}
+		}
+	}
+
+	// Коммитим транзакцию
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
 }

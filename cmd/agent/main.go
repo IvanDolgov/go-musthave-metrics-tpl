@@ -83,10 +83,67 @@ func run(cfg models.Config) error {
 	return nil
 }
 
+// sendMetricsBatch отправляет метрики батчем
+func sendMetricsBatch(cfg models.Config, metrics []models.Metrics) error {
+	if len(metrics) == 0 {
+		return nil // Не отправляем пустые батчи
+	}
+
+	// Формируем полный адрес сервера
+	fullPathServer := buildServerAddress(cfg.Server, cfg.Port)
+	endpoint := fmt.Sprintf("http://%s/updates", fullPathServer)
+
+	// Кодируем метрики в JSON
+	jsonData, err := json.Marshal(metrics)
+	if err != nil {
+		return fmt.Errorf("error encoding JSON: %w", err)
+	}
+
+	// Сжимаем данные
+	compressedData, err := compress.GzipCompress(jsonData)
+	if err != nil {
+		return fmt.Errorf("gzip compress error: %w", err)
+	}
+
+	// Создаем клиент с таймаутом
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	// Создаем запрос
+	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(compressedData))
+	if err != nil {
+		return fmt.Errorf("error creating request: %w", err)
+	}
+
+	// Устанавливаем заголовки
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("Accept-Encoding", "gzip")
+
+	// Отправляем запрос
+	response, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("error sending metrics batch: %w", err)
+	}
+	defer response.Body.Close()
+
+	// Проверяем статус ответа
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("server returned non-OK status: %d", response.StatusCode)
+	}
+
+	logger.Log.Debug("Successfully sent metrics batch",
+		zap.Int("metrics_count", len(metrics)),
+	)
+	return nil
+}
+
 func sendRuntimeMetrics(cfg models.Config, pollCount int64, randomValue float64, memStats runtime.MemStats) error {
-	// Отправляем ВСЕ необходимые метрики из автотеста
-	metricsToSend := map[string]float64{
-		// Runtime метрики из memStats
+	var metrics []models.Metrics
+
+	// Runtime метрики из memStats
+	runtimeMetrics := map[string]float64{
 		"Alloc":         float64(memStats.Alloc),
 		"BuckHashSys":   float64(memStats.BuckHashSys),
 		"Frees":         float64(memStats.Frees),
@@ -114,29 +171,29 @@ func sendRuntimeMetrics(cfg models.Config, pollCount int64, randomValue float64,
 		"StackSys":      float64(memStats.StackSys),
 		"Sys":           float64(memStats.Sys),
 		"TotalAlloc":    float64(memStats.TotalAlloc),
-
-		// Кастомные метрики
-		"RandomValue": randomValue,
+		"RandomValue":   randomValue,
 	}
 
-	// Собираем ошибки отправки
-	var errors []string
-
-	// Отправляем gauge метрики
-	for name, value := range metricsToSend {
-		if err := sendMetric("gauge", name, value, cfg); err != nil {
-			errors = append(errors, fmt.Sprintf("%s: %v", name, err))
-		}
+	// Добавляем gauge метрики в батч
+	for name, value := range runtimeMetrics {
+		valueCopy := value
+		metrics = append(metrics, models.Metrics{
+			ID:    name,
+			MType: "gauge",
+			Value: &valueCopy,
+		})
 	}
 
-	// Отправляем counter метрику
-	if err := sendMetric("counter", "PollCount", pollCount, cfg); err != nil {
-		errors = append(errors, fmt.Sprintf("PollCount: %v", err))
-	}
+	// Добавляем counter метрику в батч
+	metrics = append(metrics, models.Metrics{
+		ID:    "PollCount",
+		MType: "counter",
+		Delta: &pollCount,
+	})
 
-	// Если были ошибки, возвращаем их
-	if len(errors) > 0 {
-		return fmt.Errorf("failed to send metrics: %s", strings.Join(errors, "; "))
+	// Отправляем батч
+	if err := sendMetricsBatch(cfg, metrics); err != nil {
+		return fmt.Errorf("failed to send metrics batch: %w", err)
 	}
 
 	return nil

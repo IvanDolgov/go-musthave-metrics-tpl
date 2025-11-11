@@ -248,3 +248,49 @@ func sendJSONMetric(store storage.Storage) http.HandlerFunc {
 		json.NewEncoder(w).Encode(foundMetric)
 	}
 }
+
+// updateMetricsBatch обрабатывает батчевое обновление метрик
+func updateMetricsBatch(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var metrics []models.Metrics
+		var buf bytes.Buffer
+
+		// Читаем тело запроса
+		_, err := buf.ReadFrom(req.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Десериализуем JSON в массив метрик
+		if err = json.Unmarshal(buf.Bytes(), &metrics); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Проверяем, что массив не пустой
+		if len(metrics) == 0 {
+			http.Error(w, "Empty metrics batch", http.StatusBadRequest)
+			return
+		}
+
+		// Обновляем метрики батчем
+		if err := store.UpdateMetricsBatch(metrics); err != nil {
+			logger.Log.Error("Failed to update metrics batch", zap.Error(err))
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		// Возвращаем успешный статус
+		response := map[string]string{"status": "ok"}
+		json.NewEncoder(w).Encode(response)
+	}
+}

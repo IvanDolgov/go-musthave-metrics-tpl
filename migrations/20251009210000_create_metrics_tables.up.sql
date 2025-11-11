@@ -2,13 +2,13 @@
 CREATE TABLE IF NOT EXISTS gauge_metrics (
     name VARCHAR(255) PRIMARY KEY,
     value DOUBLE PRECISION NOT NULL,
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS counter_metrics (
     name VARCHAR(255) PRIMARY KEY,
-    value BIGINT NOT NULL DEFAULT 0,
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL
+    value BIGINT NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- Индексы для оптимизации

@@ -92,6 +92,10 @@ func run(cfg models.Config) error {
 	router.Post(`/update/{type_metric}/{metric}/{value_metric}`, getMetrics(store))
 	router.Post(`/update/{type_metric}/{metric}/{value_metric}/`, getMetrics(store))
 
+	// НОВЫЕ ХЕНДЛЕРЫ ДЛЯ БАТЧЕВОГО ОБНОВЛЕНИЯ
+	router.Post(`/updates`, updateMetricsBatch(store))
+	router.Post(`/updates/`, updateMetricsBatch(store))
+
 	router.Post(`/update`, getJSONMetric(store))
 	router.Post(`/update/`, getJSONMetric(store))
 
@@ -100,10 +104,6 @@ func run(cfg models.Config) error {
 
 	router.Get(`/value/{type_metric}/{metric}`, sendMetrics(store))
 	router.Get(`/value/{type_metric}/{metric}/`, sendMetrics(store))
-
-	// Хендлер проверки подключения к БД
-	router.Get(`/ping`, checkConnectDatabase(dbStorage))
-	router.Get(`/ping/`, checkConnectDatabase(dbStorage))
 
 	// HTTP сервер
 	server := &http.Server{

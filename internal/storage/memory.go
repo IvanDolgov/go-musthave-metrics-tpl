@@ -17,6 +17,7 @@ type Storage interface {
 	GetMetricForJSON(name string, metricType models.MetricType) models.Metrics
 	SaveToFile(filename string) error
 	LoadFromFile(filename string) error
+	UpdateMetricsBatch(metrics []models.Metrics) error
 }
 
 // MemStorage - хранилище для метрик в памяти
@@ -179,6 +180,27 @@ func (m *MemStorage) LoadFromFile(filename string) error {
 		case "counter":
 			if fm.Delta != nil {
 				m.counters[fm.ID] = *fm.Delta
+			}
+		}
+	}
+
+	return nil
+}
+
+// UpdateMetricsBatch обновляет метрики батчем
+func (m *MemStorage) UpdateMetricsBatch(metrics []models.Metrics) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, metric := range metrics {
+		switch metric.MType {
+		case "gauge":
+			if metric.Value != nil {
+				m.gauges[metric.ID] = *metric.Value
+			}
+		case "counter":
+			if metric.Delta != nil {
+				m.counters[metric.ID] += *metric.Delta
 			}
 		}
 	}

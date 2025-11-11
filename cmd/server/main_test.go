@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/config"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -412,4 +413,25 @@ func TestParseFlags(t *testing.T) {
 			}
 		})
 	}
+}
+
+// UpdateMetricsBatch обновляет метрики батчем (для совместимости с интерфейсом)
+func (m *MemStorage) UpdateMetricsBatch(metrics []models.Metrics) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, metric := range metrics {
+		switch metric.MType {
+		case "gauge":
+			if metric.Value != nil {
+				m.gauges[metric.ID] = *metric.Value
+			}
+		case "counter":
+			if metric.Delta != nil {
+				m.counters[metric.ID] += *metric.Delta
+			}
+		}
+	}
+
+	return nil
 }

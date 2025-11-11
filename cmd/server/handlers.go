@@ -158,6 +158,7 @@ func getMetrics(store storage.Storage) http.HandlerFunc {
 	}
 }
 
+// getJSONMetric обрабатывает обновление метрики через JSON
 func getJSONMetric(store storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		var metric models.Metrics
@@ -174,6 +175,7 @@ func getJSONMetric(store storage.Storage) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+
 		// десериализуем JSON в Metrics
 		if err = json.Unmarshal(buf.Bytes(), &metric); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -205,7 +207,7 @@ func getJSONMetric(store storage.Storage) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 
-		// // Возвращаем обновленную метрику, чтоб понимать удалось ли опубликовать
+		// Возвращаем обновленную метрику
 		updatedMetric := store.GetMetricForJSON(metric.ID, models.MetricType(metric.MType))
 		json.NewEncoder(w).Encode(updatedMetric)
 	}

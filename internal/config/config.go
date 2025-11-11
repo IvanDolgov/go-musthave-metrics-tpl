@@ -66,13 +66,11 @@ func ParseAgentFlags() models.Config {
 		address        string
 		pollInterval   int64
 		reportInterval int64
-		batchMode      bool // новый флаг для батчевого режима
 	)
 
 	flag.StringVar(&address, "a", "localhost:8080", "server address")
 	flag.Int64Var(&pollInterval, "p", 2, "poll interval in seconds")
 	flag.Int64Var(&reportInterval, "r", 10, "report interval in seconds")
-	flag.BoolVar(&batchMode, "b", false, "enable batch mode (use /updates endpoint)") // новый флаг
 
 	flag.Parse()
 
@@ -93,12 +91,6 @@ func ParseAgentFlags() models.Config {
 		}
 	}
 
-	if envBatchMode := os.Getenv("BATCH_MODE"); envBatchMode != "" {
-		if val, err := strconv.ParseBool(envBatchMode); err == nil {
-			batchMode = val
-		}
-	}
-
 	// Парсим адрес на server и port
 	server, port := parseAddress(address)
 
@@ -108,7 +100,6 @@ func ParseAgentFlags() models.Config {
 		Port:           port,
 		PollInterval:   time.Duration(pollInterval) * time.Second,
 		ReportInterval: time.Duration(reportInterval) * time.Second,
-		BatchMode:      batchMode, // новый параметр
 	}
 }
 

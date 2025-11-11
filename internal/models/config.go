@@ -13,5 +13,5 @@ type Config struct {
 	PollInterval    time.Duration // для агента
 	ReportInterval  time.Duration // для агента
 	DatabaseDSN     string
-	BatchMode       bool
+	// BatchMode       bool
 }

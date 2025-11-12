@@ -6,8 +6,12 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/error/pgerrors" // ИСПРАВЛЕННЫЙ ПУТЬ
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/retry"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"go.uber.org/zap"
 )
 
 // DatabaseStorage интерфейс для проверки подключения к БД
@@ -26,12 +30,13 @@ type Storage interface {
 	GetMetricForJSON(name string, metricType models.MetricType) models.Metrics
 	SaveToFile(filename string) error
 	LoadFromFile(filename string) error
-	UpdateMetricsBatch(metrics []models.Metrics) error // НОВЫЙ МЕТОД
+	UpdateMetricsBatch(metrics []models.Metrics) error
 }
 
 // PostgresStorage реализация Storage для PostgreSQL
 type PostgresStorage struct {
-	db *sql.DB
+	db         *sql.DB
+	classifier *pgerrors.PostgresErrorClassifier // ДОБАВЛЕНО ПОЛЕ
 }
 
 // NewPostgresStorage создает новое подключение к PostgreSQL
@@ -61,40 +66,73 @@ func NewPostgresStorage(connectionString string) (Storage, error) {
 		return nil, fmt.Errorf("failed to apply migrations: %w", err)
 	}
 
-	return &PostgresStorage{db: db}, nil
+	return &PostgresStorage{
+		db:         db,
+		classifier: pgerrors.NewPostgresErrorClassifier(), // ИНИЦИАЛИЗАЦИЯ КЛАССИФИКАТОРА
+	}, nil
 }
 
-// SetGauge устанавливает значение для gauge-метрики
+// SetGauge устанавливает значение для gauge-метрики с повторными попытками
 func (s *PostgresStorage) SetGauge(name string, value float64) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := context.Background()
 
-	query := `
-		INSERT INTO gauge_metrics (name, value, updated_at) 
-		VALUES ($1, $2, $3)
-		ON CONFLICT (name) 
-		DO UPDATE SET value = $2, updated_at = $3
-	`
-	_, err := s.db.ExecContext(ctx, query, name, value, time.Now())
+	operation := func() error {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		query := `
+			INSERT INTO gauge_metrics (name, value, updated_at) 
+			VALUES ($1, $2, $3)
+			ON CONFLICT (name) 
+			DO UPDATE SET value = $2, updated_at = $3
+		`
+		_, err := s.db.ExecContext(ctx, query, name, value, time.Now())
+		if err != nil {
+			logger.LogDatabaseError("set_gauge", err, query, name, value)
+		}
+		return err
+	}
+
+	err := retry.WithRetry(ctx, retry.DefaultRetryConfig, operation, s.classifier)
 	if err != nil {
-		fmt.Printf("Failed to set gauge metric: %v\n", err)
+		logger.LogErrorWithContext(err, "Failed to set gauge metric after all retry attempts",
+			zap.String("metric_name", name),
+			zap.Float64("metric_value", value),
+		)
+	} else {
+		logger.LogMetricUpdate("gauge", name, value, nil)
 	}
 }
 
-// IncrementCounter увеличивает значение counter-метрики
+// IncrementCounter увеличивает значение counter-метрики с повторными попытками
 func (s *PostgresStorage) IncrementCounter(name string, delta int64) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := context.Background()
 
-	query := `
-		INSERT INTO counter_metrics (name, value, updated_at) 
-		VALUES ($1, $2, $3)
-		ON CONFLICT (name) 
-		DO UPDATE SET value = counter_metrics.value + $2, updated_at = $3
-	`
-	_, err := s.db.ExecContext(ctx, query, name, delta, time.Now())
+	operation := func() error {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		query := `
+			INSERT INTO counter_metrics (name, value, updated_at) 
+			VALUES ($1, $2, $3)
+			ON CONFLICT (name) 
+			DO UPDATE SET value = counter_metrics.value + $2, updated_at = $3
+		`
+		_, err := s.db.ExecContext(ctx, query, name, delta, time.Now())
+		if err != nil {
+			logger.LogDatabaseError("increment_counter", err, query, name, delta)
+		}
+		return err
+	}
+
+	err := retry.WithRetry(ctx, retry.DefaultRetryConfig, operation, s.classifier)
 	if err != nil {
-		fmt.Printf("Failed to increment counter metric: %v\n", err)
+		logger.LogErrorWithContext(err, "Failed to increment counter metric after all retry attempts",
+			zap.String("metric_name", name),
+			zap.Int64("metric_delta", delta),
+		)
+	} else {
+		logger.LogMetricUpdate("counter", name, delta, nil)
 	}
 }
 
@@ -226,9 +264,20 @@ func (s *PostgresStorage) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
 }
 
-// UpdateMetricsBatch обновляет метрики батчем в транзакции
+// UpdateMetricsBatch обновляет метрики батчем в транзакции с повторными попытками
 func (s *PostgresStorage) UpdateMetricsBatch(metrics []models.Metrics) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx := context.Background()
+
+	operation := func() error {
+		return s.updateMetricsBatchTx(ctx, metrics)
+	}
+
+	return retry.WithRetry(ctx, retry.DefaultRetryConfig, operation, s.classifier)
+}
+
+// updateMetricsBatchTx внутренняя функция для обновления метрик в транзакции
+func (s *PostgresStorage) updateMetricsBatchTx(ctx context.Context, metrics []models.Metrics) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	// Начинаем транзакцию
@@ -240,22 +289,22 @@ func (s *PostgresStorage) UpdateMetricsBatch(metrics []models.Metrics) error {
 
 	// Подготавливаем запросы для gauge и counter
 	gaugeStmt, err := tx.PrepareContext(ctx, `
-        INSERT INTO gauge_metrics (name, value, updated_at) 
-        VALUES ($1, $2, $3)
-        ON CONFLICT (name) 
-        DO UPDATE SET value = $2, updated_at = $3
-    `)
+		INSERT INTO gauge_metrics (name, value, updated_at) 
+		VALUES ($1, $2, $3)
+		ON CONFLICT (name) 
+		DO UPDATE SET value = $2, updated_at = $3
+	`)
 	if err != nil {
 		return fmt.Errorf("failed to prepare gauge statement: %w", err)
 	}
 	defer gaugeStmt.Close()
 
 	counterStmt, err := tx.PrepareContext(ctx, `
-        INSERT INTO counter_metrics (name, value, updated_at) 
-        VALUES ($1, $2, $3)
-        ON CONFLICT (name) 
-        DO UPDATE SET value = counter_metrics.value + $2, updated_at = $3
-    `)
+		INSERT INTO counter_metrics (name, value, updated_at) 
+		VALUES ($1, $2, $3)
+		ON CONFLICT (name) 
+		DO UPDATE SET value = counter_metrics.value + $2, updated_at = $3
+	`)
 	if err != nil {
 		return fmt.Errorf("failed to prepare counter statement: %w", err)
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -18,6 +19,7 @@ import (
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/config"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/retry"
 	"go.uber.org/zap"
 )
 
@@ -83,11 +85,30 @@ func run(cfg models.Config) error {
 	return nil
 }
 
-// sendMetricsBatch отправляет метрики батчем
+// sendMetricsBatch отправляет метрики батчем с повторными попытками
 func sendMetricsBatch(cfg models.Config, metrics []models.Metrics) error {
 	if len(metrics) == 0 {
 		return nil // Не отправляем пустые батчи
 	}
+
+	ctx := context.Background()
+
+	operation := func() error {
+		return sendMetricsBatchOnce(cfg, metrics)
+	}
+
+	// Для агента используем классификатор nil, так как он работает с HTTP, не с PostgreSQL
+	err := retry.WithRetry(ctx, retry.DefaultRetryConfig, operation, nil)
+	if err != nil {
+		return fmt.Errorf("failed to send metrics batch after retries: %w", err)
+	}
+
+	return nil
+}
+
+// sendMetricsBatchOnce отправляет метрики батчем (одна попытка)
+func sendMetricsBatchOnce(cfg models.Config, metrics []models.Metrics) error {
+	startTime := time.Now()
 
 	// Формируем полный адрес сервера
 	fullPathServer := buildServerAddress(cfg.Server, cfg.Port)
@@ -96,12 +117,14 @@ func sendMetricsBatch(cfg models.Config, metrics []models.Metrics) error {
 	// Кодируем метрики в JSON
 	jsonData, err := json.Marshal(metrics)
 	if err != nil {
+		logger.LogErrorWithContext(err, "Failed to marshal metrics to JSON")
 		return fmt.Errorf("error encoding JSON: %w", err)
 	}
 
 	// Сжимаем данные
 	compressedData, err := compress.GzipCompress(jsonData)
 	if err != nil {
+		logger.LogErrorWithContext(err, "Failed to compress metrics data")
 		return fmt.Errorf("gzip compress error: %w", err)
 	}
 
@@ -113,6 +136,7 @@ func sendMetricsBatch(cfg models.Config, metrics []models.Metrics) error {
 	// Создаем запрос
 	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(compressedData))
 	if err != nil {
+		logger.LogErrorWithContext(err, "Failed to create HTTP request")
 		return fmt.Errorf("error creating request: %w", err)
 	}
 
@@ -124,18 +148,21 @@ func sendMetricsBatch(cfg models.Config, metrics []models.Metrics) error {
 	// Отправляем запрос
 	response, err := client.Do(req)
 	if err != nil {
+		logger.LogNetworkError("send_metrics_batch", endpoint, err, 0)
 		return fmt.Errorf("error sending metrics batch: %w", err)
 	}
 	defer response.Body.Close()
 
 	// Проверяем статус ответа
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("server returned non-OK status: %d", response.StatusCode)
+		err := fmt.Errorf("server returned non-OK status: %d", response.StatusCode)
+		logger.LogNetworkError("send_metrics_batch", endpoint, err, response.StatusCode)
+		return err
 	}
 
-	logger.Log.Debug("Successfully sent metrics batch",
-		zap.Int("metrics_count", len(metrics)),
-	)
+	duration := time.Since(startTime)
+	logger.LogBatchOperation("send_metrics_batch", len(metrics), duration, nil)
+
 	return nil
 }
 

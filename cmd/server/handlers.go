@@ -263,26 +263,26 @@ func updateMetricsBatch(store storage.Storage) http.HandlerFunc {
 		// Читаем тело запроса
 		_, err := buf.ReadFrom(req.Body)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, fmt.Errorf("failed to read request body: %w", err).Error(), http.StatusBadRequest)
 			return
 		}
 
 		// Десериализуем JSON в массив метрик
 		if err = json.Unmarshal(buf.Bytes(), &metrics); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, fmt.Errorf("failed to unmarshal JSON: %w", err).Error(), http.StatusBadRequest)
 			return
 		}
 
 		// Проверяем, что массив не пустой
 		if len(metrics) == 0 {
-			http.Error(w, "Empty metrics batch", http.StatusBadRequest)
+			http.Error(w, "empty metrics batch", http.StatusBadRequest)
 			return
 		}
 
 		// Обновляем метрики батчем
 		if err := store.UpdateMetricsBatch(metrics); err != nil {
 			logger.Log.Error("Failed to update metrics batch", zap.Error(err))
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			http.Error(w, fmt.Errorf("failed to update metrics: %w", err).Error(), http.StatusInternalServerError)
 			return
 		}
 
@@ -291,6 +291,8 @@ func updateMetricsBatch(store storage.Storage) http.HandlerFunc {
 
 		// Возвращаем успешный статус
 		response := map[string]string{"status": "ok"}
-		json.NewEncoder(w).Encode(response)
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			logger.Log.Error("Failed to encode response", zap.Error(err))
+		}
 	}
 }

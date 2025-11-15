@@ -2,8 +2,11 @@ package retry
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strings"
+	"net"
+	"os"
+	"syscall"
 	"time"
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
@@ -104,40 +107,67 @@ func getDelay(config RetryConfig, attempt int) time.Duration {
 	return config.Delays[len(config.Delays)-1]
 }
 
-// isNetworkError проверяет, является ли ошибка сетевой
+// isNetworkError проверяет, является ли ошибка сетевой или временной
 func isNetworkError(err error) bool {
 	if err == nil {
 		return false
 	}
 
-	errorStr := err.Error()
-	networkErrors := []string{
-		"connection refused",
-		"connection reset",
-		"network is unreachable",
-		"timeout",
-		"deadline exceeded",
-		"no such host",
-		"temporary failure",
-		"dial tcp",
-	}
-
-	for _, networkError := range networkErrors {
-		if containsIgnoreCase(errorStr, networkError) {
+	// Проверяем стандартные сетевые ошибки через errors.As
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		// Сетевые ошибки с таймаутом считаем retriable
+		if netErr.Timeout() {
 			return true
 		}
 	}
 
-	return false
-}
-
-// containsIgnoreCase проверяет наличие подстроки без учета регистра
-func containsIgnoreCase(s, substr string) bool {
-	if len(s) < len(substr) {
-		return false
+	// Проверяем системные ошибки через errors.As
+	var syscallErr syscall.Errno
+	if errors.As(err, &syscallErr) {
+		// Конкретные syscall ошибки, которые являются сетевыми
+		switch syscallErr {
+		case syscall.ECONNREFUSED, // Connection refused
+			syscall.ECONNRESET,   // Connection reset by peer
+			syscall.ETIMEDOUT,    // Connection timed out
+			syscall.EHOSTUNREACH, // No route to host
+			syscall.ENETUNREACH,  // Network is unreachable
+			syscall.EAGAIN,       // Resource temporarily unavailable
+			syscall.ECONNABORTED: // Software caused connection abort
+			return true
+		}
 	}
 
-	sLower := strings.ToLower(s)
-	substrLower := strings.ToLower(substr)
-	return strings.Contains(sLower, substrLower)
+	// Проверяем DNS ошибки
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		// DNS ошибки обычно временные и могут быть retriable
+		if dnsErr.IsTemporary || dnsErr.Timeout() {
+			return true
+		}
+	}
+
+	// Проверяем ошибки операций с файлами (могут быть связаны с сетью)
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		// Рекурсивно проверяем обернутую ошибку
+		return isNetworkError(pathErr.Err)
+	}
+
+	// Проверяем конкретные типы ошибок через errors.Is
+	switch {
+	case errors.Is(err, net.ErrClosed), // Use of closed network connection
+		errors.Is(err, os.ErrDeadlineExceeded),   // I/O timeout
+		errors.Is(err, context.DeadlineExceeded), // Context deadline exceeded
+		errors.Is(err, context.Canceled):         // Context canceled
+		return true
+	}
+
+	// Рекурсивно проверяем обернутые ошибки
+	unwrapped := errors.Unwrap(err)
+	if unwrapped != nil {
+		return isNetworkError(unwrapped)
+	}
+
+	return false
 }

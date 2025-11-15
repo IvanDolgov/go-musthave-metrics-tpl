@@ -6,9 +6,24 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/error/pgerrors"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"go.uber.org/zap"
+)
+
+// ErrorClassifier интерфейс для классификации ошибок
+type ErrorClassifier interface {
+	Classify(err error) ErrorClassification
+}
+
+// ErrorClassification тип для классификации ошибок
+type ErrorClassification int
+
+const (
+	// NonRetriable - операцию не следует повторять
+	NonRetriable ErrorClassification = iota
+
+	// Retriable - операцию можно повторить
+	Retriable
 )
 
 // RetryConfig конфигурация для повторных попыток
@@ -27,7 +42,7 @@ var DefaultRetryConfig = RetryConfig{
 type RetriableFunc func() error
 
 // WithRetry выполняет функцию с повторными попытками для retriable-ошибок
-func WithRetry(ctx context.Context, config RetryConfig, fn RetriableFunc, classifier *pgerrors.PostgresErrorClassifier) error {
+func WithRetry(ctx context.Context, config RetryConfig, fn RetriableFunc, classifier ErrorClassifier) error {
 	var lastErr error
 
 	for attempt := 0; attempt < config.MaxAttempts; attempt++ {
@@ -46,7 +61,7 @@ func WithRetry(ctx context.Context, config RetryConfig, fn RetriableFunc, classi
 		isRetriable := false
 		if classifier != nil {
 			classification := classifier.Classify(err)
-			isRetriable = (classification == pgerrors.Retriable)
+			isRetriable = (classification == Retriable)
 		} else {
 			// Если классификатор не передан, считаем все сетевые ошибки retriable
 			isRetriable = isNetworkError(err)

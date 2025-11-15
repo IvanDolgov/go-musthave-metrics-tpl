@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/error/pgerrors" // ИСПРАВЛЕННЫЙ ПУТЬ
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/error/pgerrors"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/retry"
@@ -36,7 +36,7 @@ type Storage interface {
 // PostgresStorage реализация Storage для PostgreSQL
 type PostgresStorage struct {
 	db         *sql.DB
-	classifier *pgerrors.PostgresErrorClassifier // ДОБАВЛЕНО ПОЛЕ
+	classifier retry.ErrorClassifier // ИЗМЕНЕНО: используем интерфейс вместо конкретного типа
 }
 
 // NewPostgresStorage создает новое подключение к PostgreSQL
@@ -68,7 +68,7 @@ func NewPostgresStorage(connectionString string) (Storage, error) {
 
 	return &PostgresStorage{
 		db:         db,
-		classifier: pgerrors.NewPostgresErrorClassifier(), // ИНИЦИАЛИЗАЦИЯ КЛАССИФИКАТОРА
+		classifier: pgerrors.NewPostgresErrorClassifier(), // PostgresErrorClassifier реализует интерфейс ErrorClassifier
 	}, nil
 }
 

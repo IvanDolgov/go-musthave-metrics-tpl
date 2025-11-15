@@ -3,19 +3,9 @@ package pgerrors
 import (
 	"errors"
 
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/retry"
 	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5/pgconn"
-)
-
-// PGErrorClassification тип для классификации ошибок
-type PGErrorClassification int
-
-const (
-	// NonRetriable - операцию не следует повторять
-	NonRetriable PGErrorClassification = iota
-
-	// Retriable - операцию можно повторить
-	Retriable
 )
 
 // PostgresErrorClassifier классификатор ошибок PostgreSQL
@@ -25,10 +15,10 @@ func NewPostgresErrorClassifier() *PostgresErrorClassifier {
 	return &PostgresErrorClassifier{}
 }
 
-// Classify классифицирует ошибку и возвращает PGErrorClassification
-func (c *PostgresErrorClassifier) Classify(err error) PGErrorClassification {
+// Classify классифицирует ошибку и возвращает ErrorClassification
+func (c *PostgresErrorClassifier) Classify(err error) retry.ErrorClassification {
 	if err == nil {
-		return NonRetriable
+		return retry.NonRetriable
 	}
 
 	// Проверяем и конвертируем в pgconn.PgError, если это возможно
@@ -38,10 +28,10 @@ func (c *PostgresErrorClassifier) Classify(err error) PGErrorClassification {
 	}
 
 	// По умолчанию считаем ошибку неповторяемой
-	return NonRetriable
+	return retry.NonRetriable
 }
 
-func classifyPgError(pgErr *pgconn.PgError) PGErrorClassification {
+func classifyPgError(pgErr *pgconn.PgError) retry.ErrorClassification {
 	// Коды ошибок PostgreSQL: https://www.postgresql.org/docs/current/errcodes-appendix.html
 
 	switch pgErr.Code {
@@ -49,34 +39,34 @@ func classifyPgError(pgErr *pgconn.PgError) PGErrorClassification {
 	case pgerrcode.ConnectionException,
 		pgerrcode.ConnectionDoesNotExist,
 		pgerrcode.ConnectionFailure:
-		return Retriable
+		return retry.Retriable
 
 	// Класс 40 - Откат транзакции (Transaction Rollback)
 	case pgerrcode.TransactionRollback, // 40000
 		pgerrcode.SerializationFailure, // 40001
 		pgerrcode.DeadlockDetected:     // 40P01
-		return Retriable
+		return retry.Retriable
 
 	// Класс 53 - Недостаточно ресурсов (Insufficient Resources)
 	case pgerrcode.InsufficientResources,
 		pgerrcode.DiskFull,
 		pgerrcode.OutOfMemory,
 		pgerrcode.TooManyConnections:
-		return Retriable
+		return retry.Retriable
 
 	// Класс 57 - Администратор запретил операцию (Operator Intervention)
 	case pgerrcode.OperatorIntervention,
 		pgerrcode.QueryCanceled:
-		return Retriable
+		return retry.Retriable
 
 	// Класс 57P03 - Cannot connect now (база в режиме standby и т.д.)
 	case "57P03": // Cannot connect now
-		return Retriable
+		return retry.Retriable
 
 	// Класс 58 - System errors (system errors)
 	case pgerrcode.SystemError,
 		pgerrcode.IOError:
-		return Retriable
+		return retry.Retriable
 
 	default:
 		// Проверяем по классу ошибки (первые 2 символа кода)
@@ -84,17 +74,17 @@ func classifyPgError(pgErr *pgconn.PgError) PGErrorClassification {
 
 		switch errorClass {
 		case "08": // Connection Exception
-			return Retriable
+			return retry.Retriable
 		case "40": // Transaction Rollback
-			return Retriable
+			return retry.Retriable
 		case "53": // Insufficient Resources
-			return Retriable
+			return retry.Retriable
 		case "57": // Operator Intervention
-			return Retriable
+			return retry.Retriable
 		case "58": // System Error
-			return Retriable
+			return retry.Retriable
 		default:
-			return NonRetriable
+			return retry.NonRetriable
 		}
 	}
 }

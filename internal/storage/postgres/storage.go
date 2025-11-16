@@ -23,24 +23,24 @@ type DatabaseStorage interface {
 // Storage интерфейс для работы с метриками
 type Storage interface {
 	DatabaseStorage
-	SetGauge(name string, value float64)
-	IncrementCounter(name string, delta int64)
-	GetMetric(name string, metricType models.MetricType) (interface{}, bool)
-	GetAllMetrics() (map[string]float64, map[string]int64)
-	GetMetricForJSON(name string, metricType models.MetricType) models.Metrics
-	SaveToFile(filename string) error
-	LoadFromFile(filename string) error
-	UpdateMetricsBatch(metrics []models.Metrics) error
+	SetGauge(ctx context.Context, name string, value float64)
+	IncrementCounter(ctx context.Context, name string, delta int64)
+	GetMetric(ctx context.Context, name string, metricType models.MetricType) (interface{}, bool)
+	GetAllMetrics(ctx context.Context) (map[string]float64, map[string]int64)
+	GetMetricForJSON(ctx context.Context, name string, metricType models.MetricType) models.Metrics
+	SaveToFile(ctx context.Context, filename string) error
+	LoadFromFile(ctx context.Context, filename string) error
+	UpdateMetricsBatch(ctx context.Context, metrics []models.Metrics) error
 }
 
 // PostgresStorage реализация Storage для PostgreSQL
 type PostgresStorage struct {
 	db         *sql.DB
-	classifier retry.ErrorClassifier // ИЗМЕНЕНО: используем интерфейс вместо конкретного типа
+	classifier retry.ErrorClassifier
 }
 
 // NewPostgresStorage создает новое подключение к PostgreSQL
-func NewPostgresStorage(connectionString string) (Storage, error) {
+func NewPostgresStorage(ctx context.Context, connectionString string) (Storage, error) {
 	db, err := sql.Open("pgx", connectionString)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
@@ -51,33 +51,31 @@ func NewPostgresStorage(connectionString string) (Storage, error) {
 	db.SetMaxIdleConns(25)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
-	// Проверяем подключение
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Проверяем подключение с использованием переданного контекста
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	if err := db.PingContext(ctx); err != nil {
+	if err := db.PingContext(pingCtx); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	// Применяем миграции
-	if err := ApplyMigrations(db); err != nil {
+	// Применяем миграции с использованием переданного контекста
+	if err := ApplyMigrations(ctx, db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to apply migrations: %w", err)
 	}
 
 	return &PostgresStorage{
 		db:         db,
-		classifier: pgerrors.NewPostgresErrorClassifier(), // PostgresErrorClassifier реализует интерфейс ErrorClassifier
+		classifier: pgerrors.NewPostgresErrorClassifier(),
 	}, nil
 }
 
 // SetGauge устанавливает значение для gauge-метрики с повторными попытками
-func (s *PostgresStorage) SetGauge(name string, value float64) {
-	ctx := context.Background()
-
+func (s *PostgresStorage) SetGauge(ctx context.Context, name string, value float64) {
 	operation := func() error {
-		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 
 		query := `
@@ -86,7 +84,7 @@ func (s *PostgresStorage) SetGauge(name string, value float64) {
 			ON CONFLICT (name) 
 			DO UPDATE SET value = $2, updated_at = $3
 		`
-		_, err := s.db.ExecContext(ctx, query, name, value, time.Now())
+		_, err := s.db.ExecContext(queryCtx, query, name, value, time.Now())
 		if err != nil {
 			logger.LogDatabaseError("set_gauge", err, query, name, value)
 		}
@@ -105,11 +103,9 @@ func (s *PostgresStorage) SetGauge(name string, value float64) {
 }
 
 // IncrementCounter увеличивает значение counter-метрики с повторными попытками
-func (s *PostgresStorage) IncrementCounter(name string, delta int64) {
-	ctx := context.Background()
-
+func (s *PostgresStorage) IncrementCounter(ctx context.Context, name string, delta int64) {
 	operation := func() error {
-		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 
 		query := `
@@ -118,7 +114,7 @@ func (s *PostgresStorage) IncrementCounter(name string, delta int64) {
 			ON CONFLICT (name) 
 			DO UPDATE SET value = counter_metrics.value + $2, updated_at = $3
 		`
-		_, err := s.db.ExecContext(ctx, query, name, delta, time.Now())
+		_, err := s.db.ExecContext(queryCtx, query, name, delta, time.Now())
 		if err != nil {
 			logger.LogDatabaseError("increment_counter", err, query, name, delta)
 		}
@@ -137,15 +133,15 @@ func (s *PostgresStorage) IncrementCounter(name string, delta int64) {
 }
 
 // GetMetric возвращает метрику по имени и типу
-func (s *PostgresStorage) GetMetric(name string, metricType models.MetricType) (interface{}, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (s *PostgresStorage) GetMetric(ctx context.Context, name string, metricType models.MetricType) (interface{}, bool) {
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	switch metricType {
 	case models.Gauge:
 		var value float64
 		query := "SELECT value FROM gauge_metrics WHERE name = $1"
-		err := s.db.QueryRowContext(ctx, query, name).Scan(&value)
+		err := s.db.QueryRowContext(queryCtx, query, name).Scan(&value)
 		if err != nil {
 			return nil, false
 		}
@@ -154,7 +150,7 @@ func (s *PostgresStorage) GetMetric(name string, metricType models.MetricType) (
 	case models.Counter:
 		var value int64
 		query := "SELECT value FROM counter_metrics WHERE name = $1"
-		err := s.db.QueryRowContext(ctx, query, name).Scan(&value)
+		err := s.db.QueryRowContext(queryCtx, query, name).Scan(&value)
 		if err != nil {
 			return nil, false
 		}
@@ -166,15 +162,15 @@ func (s *PostgresStorage) GetMetric(name string, metricType models.MetricType) (
 }
 
 // GetAllMetrics возвращает все метрики
-func (s *PostgresStorage) GetAllMetrics() (map[string]float64, map[string]int64) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (s *PostgresStorage) GetAllMetrics(ctx context.Context) (map[string]float64, map[string]int64) {
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	gauges := make(map[string]float64)
 	counters := make(map[string]int64)
 
 	// Получаем gauge метрики
-	rows, err := s.db.QueryContext(ctx, "SELECT name, value FROM gauge_metrics")
+	rows, err := s.db.QueryContext(queryCtx, "SELECT name, value FROM gauge_metrics")
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -184,14 +180,13 @@ func (s *PostgresStorage) GetAllMetrics() (map[string]float64, map[string]int64)
 				gauges[name] = value
 			}
 		}
-		// Проверяем ошибки после итерации
 		if err := rows.Err(); err != nil {
-			fmt.Printf("Error reading gauge metrics: %v\n", err)
+			logger.Log.Error("Error reading gauge metrics", zap.Error(err))
 		}
 	}
 
 	// Получаем counter метрики
-	rows, err = s.db.QueryContext(ctx, "SELECT name, value FROM counter_metrics")
+	rows, err = s.db.QueryContext(queryCtx, "SELECT name, value FROM counter_metrics")
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -201,9 +196,8 @@ func (s *PostgresStorage) GetAllMetrics() (map[string]float64, map[string]int64)
 				counters[name] = value
 			}
 		}
-		// Проверяем ошибки после итерации
 		if err := rows.Err(); err != nil {
-			fmt.Printf("Error reading counter metrics: %v\n", err)
+			logger.Log.Error("Error reading counter metrics", zap.Error(err))
 		}
 	}
 
@@ -211,15 +205,15 @@ func (s *PostgresStorage) GetAllMetrics() (map[string]float64, map[string]int64)
 }
 
 // GetMetricForJSON возвращает метрику в формате для JSON
-func (s *PostgresStorage) GetMetricForJSON(name string, metricType models.MetricType) models.Metrics {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (s *PostgresStorage) GetMetricForJSON(ctx context.Context, name string, metricType models.MetricType) models.Metrics {
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	switch metricType {
 	case models.Gauge:
 		var value float64
 		query := "SELECT value FROM gauge_metrics WHERE name = $1"
-		err := s.db.QueryRowContext(ctx, query, name).Scan(&value)
+		err := s.db.QueryRowContext(queryCtx, query, name).Scan(&value)
 		if err == nil {
 			return models.Metrics{
 				ID:    name,
@@ -231,7 +225,7 @@ func (s *PostgresStorage) GetMetricForJSON(name string, metricType models.Metric
 	case models.Counter:
 		var value int64
 		query := "SELECT value FROM counter_metrics WHERE name = $1"
-		err := s.db.QueryRowContext(ctx, query, name).Scan(&value)
+		err := s.db.QueryRowContext(queryCtx, query, name).Scan(&value)
 		if err == nil {
 			return models.Metrics{
 				ID:    name,
@@ -245,12 +239,12 @@ func (s *PostgresStorage) GetMetricForJSON(name string, metricType models.Metric
 }
 
 // SaveToFile - для совместимости с интерфейсом
-func (s *PostgresStorage) SaveToFile(filename string) error {
+func (s *PostgresStorage) SaveToFile(ctx context.Context, filename string) error {
 	return nil
 }
 
 // LoadFromFile - для совместимости с интерфейсом
-func (s *PostgresStorage) LoadFromFile(filename string) error {
+func (s *PostgresStorage) LoadFromFile(ctx context.Context, filename string) error {
 	return nil
 }
 
@@ -265,9 +259,7 @@ func (s *PostgresStorage) Ping(ctx context.Context) error {
 }
 
 // UpdateMetricsBatch обновляет метрики батчем в транзакции с повторными попытками
-func (s *PostgresStorage) UpdateMetricsBatch(metrics []models.Metrics) error {
-	ctx := context.Background()
-
+func (s *PostgresStorage) UpdateMetricsBatch(ctx context.Context, metrics []models.Metrics) error {
 	operation := func() error {
 		return s.updateMetricsBatchTx(ctx, metrics)
 	}
@@ -277,18 +269,18 @@ func (s *PostgresStorage) UpdateMetricsBatch(metrics []models.Metrics) error {
 
 // updateMetricsBatchTx внутренняя функция для обновления метрик в транзакции
 func (s *PostgresStorage) updateMetricsBatchTx(ctx context.Context, metrics []models.Metrics) error {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	// Начинаем транзакцию
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(queryCtx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
 	// Подготавливаем запросы для gauge и counter
-	gaugeStmt, err := tx.PrepareContext(ctx, `
+	gaugeStmt, err := tx.PrepareContext(queryCtx, `
 		INSERT INTO gauge_metrics (name, value, updated_at) 
 		VALUES ($1, $2, $3)
 		ON CONFLICT (name) 
@@ -299,7 +291,7 @@ func (s *PostgresStorage) updateMetricsBatchTx(ctx context.Context, metrics []mo
 	}
 	defer gaugeStmt.Close()
 
-	counterStmt, err := tx.PrepareContext(ctx, `
+	counterStmt, err := tx.PrepareContext(queryCtx, `
 		INSERT INTO counter_metrics (name, value, updated_at) 
 		VALUES ($1, $2, $3)
 		ON CONFLICT (name) 
@@ -317,7 +309,7 @@ func (s *PostgresStorage) updateMetricsBatchTx(ctx context.Context, metrics []mo
 			if metric.Value == nil {
 				continue
 			}
-			_, err := gaugeStmt.ExecContext(ctx, metric.ID, *metric.Value, time.Now())
+			_, err := gaugeStmt.ExecContext(queryCtx, metric.ID, *metric.Value, time.Now())
 			if err != nil {
 				return fmt.Errorf("failed to update gauge metric %s: %w", metric.ID, err)
 			}
@@ -326,7 +318,7 @@ func (s *PostgresStorage) updateMetricsBatchTx(ctx context.Context, metrics []mo
 			if metric.Delta == nil {
 				continue
 			}
-			_, err := counterStmt.ExecContext(ctx, metric.ID, *metric.Delta, time.Now())
+			_, err := counterStmt.ExecContext(queryCtx, metric.ID, *metric.Delta, time.Now())
 			if err != nil {
 				return fmt.Errorf("failed to update counter metric %s: %w", metric.ID, err)
 			}

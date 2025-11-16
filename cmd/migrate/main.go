@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/storage/postgres"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -13,49 +15,48 @@ import (
 
 func main() {
 	var (
-		dsn           string
-		rollback      bool
-		targetVersion int64
+		connectionString string
+		rollbackVersion  int64
+		rollback         bool
 	)
 
-	flag.StringVar(&dsn, "d", "", "Database DSN")
+	flag.StringVar(&connectionString, "d", "", "Database connection string")
 	flag.BoolVar(&rollback, "rollback", false, "Rollback migrations")
-	flag.Int64Var(&targetVersion, "target", 0, "Target version for rollback")
+	flag.Int64Var(&rollbackVersion, "version", 0, "Target version for rollback")
 	flag.Parse()
 
-	if dsn == "" {
-		dsn = os.Getenv("DATABASE_DSN")
+	if connectionString == "" {
+		fmt.Println("Database connection string is required")
+		os.Exit(1)
 	}
 
-	if dsn == "" {
-		log.Fatal("Database DSN is required. Use -d flag or DATABASE_DSN environment variable")
-	}
+	// Создаем корневой контекст
+	ctx := context.Background()
 
-	// Подключаемся к БД
-	db, err := sql.Open("pgx", dsn)
+	db, err := sql.Open("pgx", connectionString)
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		log.Fatalf("Failed to open database: %v", err)
 	}
 	defer db.Close()
 
 	// Проверяем подключение
-	if err := db.Ping(); err != nil {
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(pingCtx); err != nil {
 		log.Fatalf("Failed to ping database: %v", err)
 	}
 
 	if rollback {
-		// Откатываем миграции
-		if targetVersion == 0 {
-			log.Fatal("Target version is required for rollback. Use -target flag")
+		if rollbackVersion == 0 {
+			fmt.Println("Target version is required for rollback")
+			os.Exit(1)
 		}
-
-		if err := postgres.RollbackMigrations(db, targetVersion); err != nil {
+		if err := postgres.RollbackMigrations(ctx, db, rollbackVersion); err != nil {
 			log.Fatalf("Failed to rollback migrations: %v", err)
 		}
-		fmt.Printf("Migrations rolled back to version %d\n", targetVersion)
+		fmt.Printf("Successfully rolled back to version %d\n", rollbackVersion)
 	} else {
-		// Применяем миграции
-		if err := postgres.ApplyMigrations(db); err != nil {
+		if err := postgres.ApplyMigrations(ctx, db); err != nil {
 			log.Fatalf("Failed to apply migrations: %v", err)
 		}
 		fmt.Println("Migrations applied successfully")

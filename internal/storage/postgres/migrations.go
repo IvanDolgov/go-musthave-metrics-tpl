@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -11,32 +12,32 @@ import (
 )
 
 // ApplyMigrations применяет миграции из папки migrations (публичная функция)
-func ApplyMigrations(db *sql.DB) error {
-	return applyMigrations(db)
+func ApplyMigrations(ctx context.Context, db *sql.DB) error {
+	return applyMigrations(ctx, db)
 }
 
 // RollbackMigrations откатывает миграции (публичная функция)
-func RollbackMigrations(db *sql.DB, targetVersion int64) error {
-	return rollbackMigrations(db, targetVersion)
+func RollbackMigrations(ctx context.Context, db *sql.DB, targetVersion int64) error {
+	return rollbackMigrations(ctx, db, targetVersion)
 }
 
 // applyMigrations применяет миграции из папки migrations
-func applyMigrations(db *sql.DB) error {
+func applyMigrations(ctx context.Context, db *sql.DB) error {
 	// Читаем файлы миграций из папки migrations
 	migrations, err := readMigrations("migrations")
 	if err != nil {
 		return fmt.Errorf("failed to read migrations: %w", err)
 	}
 
-	// Начинаем транзакцию
-	tx, err := db.Begin()
+	// Начинаем транзакцию с контекстом
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
 	// Создаем таблицу для отслеживания миграций если её нет
-	_, err = tx.Exec(`
+	_, err = tx.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version BIGINT PRIMARY KEY,
 			applied_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -48,7 +49,7 @@ func applyMigrations(db *sql.DB) error {
 
 	// Получаем список примененных миграций
 	appliedVersions := make(map[int64]bool)
-	rows, err := tx.Query("SELECT version FROM schema_migrations")
+	rows, err := tx.QueryContext(ctx, "SELECT version FROM schema_migrations")
 	if err != nil {
 		return fmt.Errorf("failed to query applied migrations: %w", err)
 	}
@@ -62,7 +63,6 @@ func applyMigrations(db *sql.DB) error {
 		appliedVersions[version] = true
 	}
 
-	// ДОБАВЛЯЕМ ПРОВЕРКУ rows.Err()
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("error iterating applied migrations: %w", err)
 	}
@@ -74,13 +74,13 @@ func applyMigrations(db *sql.DB) error {
 		}
 
 		// Выполняем UP-миграцию
-		_, err := tx.Exec(migration.UpSQL)
+		_, err := tx.ExecContext(ctx, migration.UpSQL)
 		if err != nil {
 			return fmt.Errorf("failed to apply migration %d: %w", migration.Version, err)
 		}
 
 		// Записываем версию в таблицу миграций
-		_, err = tx.Exec("INSERT INTO schema_migrations (version) VALUES ($1)", migration.Version)
+		_, err = tx.ExecContext(ctx, "INSERT INTO schema_migrations (version) VALUES ($1)", migration.Version)
 		if err != nil {
 			return fmt.Errorf("failed to record migration %d: %w", migration.Version, err)
 		}
@@ -92,7 +92,7 @@ func applyMigrations(db *sql.DB) error {
 }
 
 // rollbackMigrations откатывает миграции
-func rollbackMigrations(db *sql.DB, targetVersion int64) error {
+func rollbackMigrations(ctx context.Context, db *sql.DB, targetVersion int64) error {
 	migrations, err := readMigrations("migrations")
 	if err != nil {
 		return fmt.Errorf("failed to read migrations: %w", err)
@@ -103,7 +103,7 @@ func rollbackMigrations(db *sql.DB, targetVersion int64) error {
 		return migrations[i].Version > migrations[j].Version
 	})
 
-	tx, err := db.Begin()
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -111,7 +111,7 @@ func rollbackMigrations(db *sql.DB, targetVersion int64) error {
 
 	// Получаем текущую версию
 	var currentVersion int64
-	err = tx.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&currentVersion)
+	err = tx.QueryRowContext(ctx, "SELECT MAX(version) FROM schema_migrations").Scan(&currentVersion)
 	if err != nil {
 		return fmt.Errorf("failed to get current migration version: %w", err)
 	}
@@ -131,13 +131,13 @@ func rollbackMigrations(db *sql.DB, targetVersion int64) error {
 		}
 
 		// Выполняем DOWN-миграцию
-		_, err := tx.Exec(migration.DownSQL)
+		_, err := tx.ExecContext(ctx, migration.DownSQL)
 		if err != nil {
 			return fmt.Errorf("failed to rollback migration %d: %w", migration.Version, err)
 		}
 
 		// Удаляем запись о миграции
-		_, err = tx.Exec("DELETE FROM schema_migrations WHERE version = $1", migration.Version)
+		_, err = tx.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version = $1", migration.Version)
 		if err != nil {
 			return fmt.Errorf("failed to remove migration record %d: %w", migration.Version, err)
 		}

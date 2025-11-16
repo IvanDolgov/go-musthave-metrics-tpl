@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"sync"
@@ -10,14 +11,14 @@ import (
 
 // Storage интерфейс для работы с метриками
 type Storage interface {
-	SetGauge(name string, value float64)
-	IncrementCounter(name string, delta int64)
-	GetMetric(name string, metricType models.MetricType) (interface{}, bool)
-	GetAllMetrics() (map[string]float64, map[string]int64)
-	GetMetricForJSON(name string, metricType models.MetricType) models.Metrics
-	SaveToFile(filename string) error
-	LoadFromFile(filename string) error
-	UpdateMetricsBatch(metrics []models.Metrics) error
+	SetGauge(ctx context.Context, name string, value float64)
+	IncrementCounter(ctx context.Context, name string, delta int64)
+	GetMetric(ctx context.Context, name string, metricType models.MetricType) (interface{}, bool)
+	GetAllMetrics(ctx context.Context) (map[string]float64, map[string]int64)
+	GetMetricForJSON(ctx context.Context, name string, metricType models.MetricType) models.Metrics
+	SaveToFile(ctx context.Context, filename string) error
+	LoadFromFile(ctx context.Context, filename string) error
+	UpdateMetricsBatch(ctx context.Context, metrics []models.Metrics) error
 }
 
 // MemStorage - хранилище для метрик в памяти
@@ -36,21 +37,34 @@ func NewMemStorage() *MemStorage {
 }
 
 // SetGauge устанавливает значение для gauge-метрики
-func (m *MemStorage) SetGauge(name string, value float64) {
+func (m *MemStorage) SetGauge(ctx context.Context, name string, value float64) {
+	// Проверяем отмену контекста перед операцией
+	if err := ctx.Err(); err != nil {
+		return
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.gauges[name] = value
 }
 
 // IncrementCounter увеличивает значение counter-метрики
-func (m *MemStorage) IncrementCounter(name string, delta int64) {
+func (m *MemStorage) IncrementCounter(ctx context.Context, name string, delta int64) {
+	if err := ctx.Err(); err != nil {
+		return
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.counters[name] += delta
 }
 
 // GetAllMetrics возвращает все метрики из хранилища
-func (m *MemStorage) GetAllMetrics() (map[string]float64, map[string]int64) {
+func (m *MemStorage) GetAllMetrics(ctx context.Context) (map[string]float64, map[string]int64) {
+	if err := ctx.Err(); err != nil {
+		return make(map[string]float64), make(map[string]int64)
+	}
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -68,7 +82,11 @@ func (m *MemStorage) GetAllMetrics() (map[string]float64, map[string]int64) {
 }
 
 // GetMetric возвращает метрику по имени и типу
-func (m *MemStorage) GetMetric(name string, metricType models.MetricType) (interface{}, bool) {
+func (m *MemStorage) GetMetric(ctx context.Context, name string, metricType models.MetricType) (interface{}, bool) {
+	if err := ctx.Err(); err != nil {
+		return nil, false
+	}
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -91,7 +109,11 @@ func (m *MemStorage) GetMetric(name string, metricType models.MetricType) (inter
 }
 
 // GetMetricForJSON возвращает метрику в формате для JSON
-func (m *MemStorage) GetMetricForJSON(name string, metricType models.MetricType) models.Metrics {
+func (m *MemStorage) GetMetricForJSON(ctx context.Context, name string, metricType models.MetricType) models.Metrics {
+	if err := ctx.Err(); err != nil {
+		return models.Metrics{}
+	}
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -117,7 +139,11 @@ func (m *MemStorage) GetMetricForJSON(name string, metricType models.MetricType)
 }
 
 // SaveToFile сохраняет все метрики в файл в формате JSON
-func (m *MemStorage) SaveToFile(filename string) error {
+func (m *MemStorage) SaveToFile(ctx context.Context, filename string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -150,7 +176,11 @@ func (m *MemStorage) SaveToFile(filename string) error {
 }
 
 // LoadFromFile загружает метрики из файла
-func (m *MemStorage) LoadFromFile(filename string) error {
+func (m *MemStorage) LoadFromFile(ctx context.Context, filename string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	if _, err := os.Stat(filename); os.IsNotExist(err) {
 		return nil
 	}
@@ -188,7 +218,11 @@ func (m *MemStorage) LoadFromFile(filename string) error {
 }
 
 // UpdateMetricsBatch обновляет метрики батчем
-func (m *MemStorage) UpdateMetricsBatch(metrics []models.Metrics) error {
+func (m *MemStorage) UpdateMetricsBatch(ctx context.Context, metrics []models.Metrics) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

@@ -25,6 +25,9 @@ func run(cfg models.Config) error {
 	var store storage.Storage
 	var dbStorage postgres.DatabaseStorage
 
+	// Создаем корневой контекст
+	ctx := context.Background()
+
 	// ВЫБОР ХРАНИЛИЩА ПО ПРИОРИТЕТУ:
 	// 1. PostgreSQL (если указан DSN)
 	// 2. File storage (если указан путь к файлу)
@@ -32,7 +35,7 @@ func run(cfg models.Config) error {
 
 	if cfg.DatabaseDSN != "" {
 		logger.Log.Info("Using PostgreSQL storage", zap.String("dsn", cfg.DatabaseDSN))
-		pgStorage, err := postgres.NewPostgresStorage(cfg.DatabaseDSN)
+		pgStorage, err := postgres.NewPostgresStorage(ctx, cfg.DatabaseDSN)
 		if err != nil {
 			// ВОЗВРАЩАЕМ ОШИБКУ НЕМЕДЛЕННО
 			return fmt.Errorf("failed to initialize PostgreSQL storage: %w", err)
@@ -49,7 +52,7 @@ func run(cfg models.Config) error {
 
 		// Загружаем метрики из файла при старте
 		if cfg.Restore {
-			if err := fileStorage.LoadFromFile(cfg.FileStoragePath); err != nil {
+			if err := fileStorage.LoadFromFile(ctx, cfg.FileStoragePath); err != nil {
 				logger.Log.Warn("Failed to load metrics from file",
 					zap.String("file", cfg.FileStoragePath),
 					zap.Error(err))
@@ -152,7 +155,7 @@ func run(cfg models.Config) error {
 				defer ticker.Stop()
 
 				for range ticker.C {
-					if err := memStorage.SaveToFile(cfg.FileStoragePath); err != nil {
+					if err := memStorage.SaveToFile(ctx, cfg.FileStoragePath); err != nil {
 						logger.Log.Error("Failed to save metrics to file",
 							zap.String("file", cfg.FileStoragePath),
 							zap.Error(err),
@@ -179,7 +182,7 @@ func run(cfg models.Config) error {
 		// Сохраняем метрики перед завершением (только для file storage)
 		if memStorage, ok := store.(*storage.MemStorage); ok && cfg.FileStoragePath != "" {
 			logger.Log.Info("Saving metrics before shutdown")
-			if err := memStorage.SaveToFile(cfg.FileStoragePath); err != nil {
+			if err := memStorage.SaveToFile(ctx, cfg.FileStoragePath); err != nil {
 				logger.Log.Error("Failed to save metrics before shutdown", zap.Error(err))
 			} else {
 				logger.Log.Info("Metrics saved successfully before shutdown")
@@ -192,11 +195,11 @@ func run(cfg models.Config) error {
 	}
 
 	// Graceful shutdown
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	logger.Log.Info("Shutting down server...")
-	if err := server.Shutdown(ctx); err != nil {
+	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Log.Error("Server shutdown error", zap.Error(err))
 		return err
 	}

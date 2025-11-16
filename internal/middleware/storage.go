@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -18,7 +19,8 @@ func WithSyncSave(storage storage.Storage, filename string) func(http.Handler) h
 
 			// Сохраняем метрики только после запросов на обновление
 			if r.Method == http.MethodPost && (strings.HasPrefix(r.URL.Path, "/update") || r.URL.Path == "/update/") {
-				if err := storage.SaveToFile(filename); err != nil {
+				ctx := context.Background()
+				if err := storage.SaveToFile(ctx, filename); err != nil {
 					logger.Log.Error("Failed to sync save metrics",
 						zap.String("file", filename),
 						zap.Error(err),

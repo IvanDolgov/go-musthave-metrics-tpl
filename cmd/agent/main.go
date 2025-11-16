@@ -32,7 +32,7 @@ type CurrentMetrics struct {
 }
 
 // run запускает приложение с переданной конфигурацией
-func run(cfg models.Config) error {
+func run(ctx context.Context, cfg models.Config) error {
 	// Канал для сигналов завершения
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
@@ -46,14 +46,20 @@ func run(cfg models.Config) error {
 		pollTicker := time.NewTicker(time.Duration(cfg.PollInterval))
 		defer pollTicker.Stop()
 
-		for range pollTicker.C {
-			currentMetrics.mu.Lock()
-			currentMetrics.PollCount++
-			currentMetrics.RandomValue = rand.Float64() * 100
-			runtime.ReadMemStats(&currentMetrics.MemStats)
-			currentMetrics.mu.Unlock()
+		for {
+			select {
+			case <-pollTicker.C:
+				currentMetrics.mu.Lock()
+				currentMetrics.PollCount++
+				currentMetrics.RandomValue = rand.Float64() * 100
+				runtime.ReadMemStats(&currentMetrics.MemStats)
+				currentMetrics.mu.Unlock()
 
-			logger.Log.Debug("Collected metrics batch", zap.Int64("batch_number", currentMetrics.PollCount))
+				logger.Log.Debug("Collected metrics batch", zap.Int64("batch_number", currentMetrics.PollCount))
+			case <-ctx.Done():
+				logger.Log.Info("Stopping metrics collection")
+				return
+			}
 		}
 	}()
 
@@ -62,39 +68,47 @@ func run(cfg models.Config) error {
 		reportTicker := time.NewTicker(time.Duration(cfg.ReportInterval))
 		defer reportTicker.Stop()
 
-		for range reportTicker.C {
-			currentMetrics.mu.RLock()
-			pollCount := currentMetrics.PollCount
-			randomValue := currentMetrics.RandomValue
-			memStats := currentMetrics.MemStats
-			currentMetrics.mu.RUnlock()
+		for {
+			select {
+			case <-reportTicker.C:
+				currentMetrics.mu.RLock()
+				pollCount := currentMetrics.PollCount
+				randomValue := currentMetrics.RandomValue
+				memStats := currentMetrics.MemStats
+				currentMetrics.mu.RUnlock()
 
-			logger.Log.Info("Sending metrics batch",
-				zap.Int64("batch_number", pollCount),
-				zap.String("address", cfg.Address),
-			)
-			if err := sendRuntimeMetrics(cfg, pollCount, randomValue, memStats); err != nil {
-				logger.Log.Error("Error sending metrics", zap.Error(err))
+				logger.Log.Info("Sending metrics batch",
+					zap.Int64("batch_number", pollCount),
+					zap.String("address", cfg.Address),
+				)
+				if err := sendRuntimeMetrics(ctx, cfg, pollCount, randomValue, memStats); err != nil {
+					logger.Log.Error("Error sending metrics", zap.Error(err))
+				}
+			case <-ctx.Done():
+				logger.Log.Info("Stopping metrics reporting")
+				return
 			}
 		}
 	}()
 
-	// Ждем сигнал завершения
-	<-stop
-	logger.Log.Info("Завершение программы...")
+	// Ждем сигнал завершения или отмену контекста
+	select {
+	case <-stop:
+		logger.Log.Info("Завершение программы по сигналу...")
+	case <-ctx.Done():
+		logger.Log.Info("Завершение программы по контексту...")
+	}
 	return nil
 }
 
 // sendMetricsBatch отправляет метрики батчем с повторными попытками
-func sendMetricsBatch(cfg models.Config, metrics []models.Metrics) error {
+func sendMetricsBatch(ctx context.Context, cfg models.Config, metrics []models.Metrics) error {
 	if len(metrics) == 0 {
 		return nil // Не отправляем пустые батчи
 	}
 
-	ctx := context.Background()
-
 	operation := func() error {
-		return sendMetricsBatchOnce(cfg, metrics)
+		return sendMetricsBatchOnce(ctx, cfg, metrics)
 	}
 
 	// Для агента используем классификатор nil, так как он работает с HTTP, не с PostgreSQL
@@ -107,7 +121,7 @@ func sendMetricsBatch(cfg models.Config, metrics []models.Metrics) error {
 }
 
 // sendMetricsBatchOnce отправляет метрики батчем (одна попытка)
-func sendMetricsBatchOnce(cfg models.Config, metrics []models.Metrics) error {
+func sendMetricsBatchOnce(ctx context.Context, cfg models.Config, metrics []models.Metrics) error {
 	startTime := time.Now()
 
 	// Формируем полный адрес сервера
@@ -133,8 +147,8 @@ func sendMetricsBatchOnce(cfg models.Config, metrics []models.Metrics) error {
 		Timeout: 10 * time.Second,
 	}
 
-	// Создаем запрос
-	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(compressedData))
+	// Создаем запрос с контекстом
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(compressedData))
 	if err != nil {
 		logger.LogErrorWithContext(err, "Failed to create HTTP request")
 		return fmt.Errorf("error creating request: %w", err)
@@ -166,7 +180,7 @@ func sendMetricsBatchOnce(cfg models.Config, metrics []models.Metrics) error {
 	return nil
 }
 
-func sendRuntimeMetrics(cfg models.Config, pollCount int64, randomValue float64, memStats runtime.MemStats) error {
+func sendRuntimeMetrics(ctx context.Context, cfg models.Config, pollCount int64, randomValue float64, memStats runtime.MemStats) error {
 	var metrics []models.Metrics
 
 	// Runtime метрики из memStats
@@ -219,14 +233,14 @@ func sendRuntimeMetrics(cfg models.Config, pollCount int64, randomValue float64,
 	})
 
 	// Отправляем батч
-	if err := sendMetricsBatch(cfg, metrics); err != nil {
+	if err := sendMetricsBatch(ctx, cfg, metrics); err != nil {
 		return fmt.Errorf("failed to send metrics batch: %w", err)
 	}
 
 	return nil
 }
 
-func sendMetric(metricType string, name string, value interface{}, cfg models.Config) error {
+func sendMetric(ctx context.Context, metricType string, name string, value interface{}, cfg models.Config) error {
 	// Формируем полный адрес сервера
 	fullPathServer := buildServerAddress(cfg.Server, cfg.Port)
 	endpoint := fmt.Sprintf("http://%s/update", fullPathServer)
@@ -283,7 +297,7 @@ func sendMetric(metricType string, name string, value interface{}, cfg models.Co
 	}
 
 	// Создаем запрос
-	req, err := http.NewRequest("POST", endpoint, bytes.NewBuffer(compressedData))
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(compressedData))
 	if err != nil {
 		return fmt.Errorf("error creating request for %s: %w", name, err)
 	}
@@ -325,14 +339,17 @@ func main() {
 
 	// Инициализируем логер
 	if err := logger.Initialize("info"); err != nil {
-		// Если логер не инициализировался, используем fmt для ошибки
 		fmt.Fprintf(os.Stderr, "Logger initialization error: %v\n", err)
 		os.Exit(1)
 	}
 	defer logger.Log.Sync()
 
-	// Запускаем приложение
-	if err := run(cfg); err != nil {
+	// Создаем корневой контекст
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Запускаем приложение с контекстом
+	if err := run(ctx, cfg); err != nil {
 		logger.Log.Error("Application error", zap.Error(err))
 		os.Exit(1)
 	}

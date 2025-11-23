@@ -17,13 +17,15 @@ func ParseServerFlags() models.Config {
 		storeInterval   int64
 		fileStoragePath string
 		restore         bool
+		databaseDsn     string
 	)
 
 	// Регистрируем флаги для сервера
 	flag.StringVar(&address, "a", "localhost:8080", "server address")
 	flag.Int64Var(&storeInterval, "i", 300, "store interval in seconds")
-	flag.StringVar(&fileStoragePath, "f", "/storage.json", "path storage file")
+	flag.StringVar(&fileStoragePath, "f", "", "path storage file")
 	flag.BoolVar(&restore, "r", true, "upload previous metrics from file")
+	flag.StringVar(&databaseDsn, "d", "", "database_dsn")
 
 	flag.Parse()
 
@@ -40,6 +42,10 @@ func ParseServerFlags() models.Config {
 
 	restore = getEnvBool("RESTORE", restore)
 
+	if envDatabaseDSN := os.Getenv("DATABASE_DSN"); envDatabaseDSN != "" {
+		databaseDsn = envDatabaseDSN
+	}
+
 	// Парсим адрес на server и port
 	server, port := parseAddress(address)
 
@@ -50,6 +56,7 @@ func ParseServerFlags() models.Config {
 		StoreInterval:   storeInterval,
 		FileStoragePath: fileStoragePath,
 		Restore:         restore,
+		DatabaseDSN:     databaseDsn,
 	}
 }
 

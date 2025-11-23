@@ -2,18 +2,44 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/storage"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/storage/postgres"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
+
+// checkConnectDatabase проверяет подключение к базе данных
+func checkConnectDatabase(dbStorage postgres.DatabaseStorage) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if dbStorage == nil {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("Database not configured - using in-memory storage"))
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(req.Context(), 5*time.Second)
+		defer cancel()
+
+		if err := dbStorage.Ping(ctx); err != nil {
+			http.Error(w, "Database connection failed", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Database connection successful"))
+	}
+}
 
 // getMetricsWithSync возвращает обработчик с синхронным сохранением
 func getMetricsWithSync(store storage.Storage, filePath string) http.HandlerFunc {
@@ -21,7 +47,8 @@ func getMetricsWithSync(store storage.Storage, filePath string) http.HandlerFunc
 	return func(w http.ResponseWriter, req *http.Request) {
 		handler(w, req)
 		// Синхронно сохраняем после обновления метрик
-		if err := store.SaveToFile(filePath); err != nil {
+		ctx := context.Background()
+		if err := store.SaveToFile(ctx, filePath); err != nil {
 			logger.Log.Error("Failed to sync save metrics", zap.String("file", filePath), zap.Error(err))
 		}
 	}
@@ -33,7 +60,8 @@ func getJSONMetricWithSync(store storage.Storage, filePath string) http.HandlerF
 	return func(w http.ResponseWriter, req *http.Request) {
 		handler(w, req)
 		// Синхронно сохраняем после обновления метрик
-		if err := store.SaveToFile(filePath); err != nil {
+		ctx := context.Background()
+		if err := store.SaveToFile(ctx, filePath); err != nil {
 			logger.Log.Error("Failed to sync save metrics", zap.String("file", filePath), zap.Error(err))
 		}
 	}
@@ -41,10 +69,11 @@ func getJSONMetricWithSync(store storage.Storage, filePath string) http.HandlerF
 
 func sendMetrics(store storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
+		ctx := req.Context()
 		metricType := chi.URLParam(req, "type_metric")
 		name := chi.URLParam(req, "metric")
 
-		valueMetric, exists := store.GetMetric(name, models.MetricType(metricType))
+		valueMetric, exists := store.GetMetric(ctx, name, models.MetricType(metricType))
 
 		if exists {
 			var message string
@@ -67,7 +96,8 @@ func sendMetrics(store storage.Storage) http.HandlerFunc {
 
 func summaryMetrics(store storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		gaugeMetrics, counterMetrics := store.GetAllMetrics()
+		ctx := req.Context()
+		gaugeMetrics, counterMetrics := store.GetAllMetrics(ctx)
 
 		// Формируем текстовый ответ
 		var response strings.Builder
@@ -91,6 +121,7 @@ func summaryMetrics(store storage.Storage) http.HandlerFunc {
 
 func getMetrics(store storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
+		ctx := req.Context()
 		if req.Method != http.MethodPost {
 			// разрешаем только POST-запросы
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -112,7 +143,7 @@ func getMetrics(store storage.Storage) http.HandlerFunc {
 				http.Error(w, "Invalid gauge value", http.StatusBadRequest)
 				return
 			}
-			store.SetGauge(name, value)
+			store.SetGauge(ctx, name, value)
 			w.WriteHeader(http.StatusOK)
 
 		case "counter":
@@ -122,7 +153,7 @@ func getMetrics(store storage.Storage) http.HandlerFunc {
 				http.Error(w, "Invalid counter value", http.StatusBadRequest)
 				return
 			}
-			store.IncrementCounter(name, value)
+			store.IncrementCounter(ctx, name, value)
 			w.WriteHeader(http.StatusOK)
 
 		default:
@@ -134,6 +165,7 @@ func getMetrics(store storage.Storage) http.HandlerFunc {
 
 func getJSONMetric(store storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
+		ctx := req.Context()
 		var metric models.Metrics
 		var buf bytes.Buffer
 
@@ -161,14 +193,14 @@ func getJSONMetric(store storage.Storage) http.HandlerFunc {
 				http.Error(w, "Missing value for gauge metric", http.StatusBadRequest)
 				return
 			}
-			store.SetGauge(metric.ID, *metric.Value)
+			store.SetGauge(ctx, metric.ID, *metric.Value)
 
 		case "counter":
 			if metric.Delta == nil {
 				http.Error(w, "Missing delta for counter metric", http.StatusBadRequest)
 				return
 			}
-			store.IncrementCounter(metric.ID, *metric.Delta)
+			store.IncrementCounter(ctx, metric.ID, *metric.Delta)
 
 		default:
 			http.Error(w, "Invalid metric type", http.StatusBadRequest)
@@ -180,13 +212,14 @@ func getJSONMetric(store storage.Storage) http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 
 		// // Возвращаем обновленную метрику, чтоб понимать удалось ли опубликовать
-		updatedMetric := store.GetMetricForJSON(metric.ID, models.MetricType(metric.MType))
+		updatedMetric := store.GetMetricForJSON(ctx, metric.ID, models.MetricType(metric.MType))
 		json.NewEncoder(w).Encode(updatedMetric)
 	}
 }
 
 func sendJSONMetric(store storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
+		ctx := req.Context()
 		var metric models.Metrics
 		var buf bytes.Buffer
 
@@ -208,7 +241,7 @@ func sendJSONMetric(store storage.Storage) http.HandlerFunc {
 		}
 
 		// Получаем метрику из storage
-		foundMetric := store.GetMetricForJSON(metric.ID, models.MetricType(metric.MType))
+		foundMetric := store.GetMetricForJSON(ctx, metric.ID, models.MetricType(metric.MType))
 
 		// Если метрика не найдена
 		if foundMetric.ID == "" {
@@ -220,5 +253,54 @@ func sendJSONMetric(store storage.Storage) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(foundMetric)
+	}
+}
+
+// updateMetricsBatch обрабатывает батчевое обновление метрик
+func updateMetricsBatch(store storage.Storage) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		ctx := req.Context()
+		if req.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		var metrics []models.Metrics
+		var buf bytes.Buffer
+
+		// Читаем тело запроса
+		_, err := buf.ReadFrom(req.Body)
+		if err != nil {
+			http.Error(w, fmt.Errorf("failed to read request body: %w", err).Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Десериализуем JSON в массив метрик
+		if err = json.Unmarshal(buf.Bytes(), &metrics); err != nil {
+			http.Error(w, fmt.Errorf("failed to unmarshal JSON: %w", err).Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Проверяем, что массив не пустой
+		if len(metrics) == 0 {
+			http.Error(w, "empty metrics batch", http.StatusBadRequest)
+			return
+		}
+
+		// Обновляем метрики батчем
+		if err := store.UpdateMetricsBatch(ctx, metrics); err != nil {
+			logger.Log.Error("Failed to update metrics batch", zap.Error(err))
+			http.Error(w, fmt.Errorf("failed to update metrics: %w", err).Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		// Возвращаем успешный статус
+		response := map[string]string{"status": "ok"}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			logger.Log.Error("Failed to encode response", zap.Error(err))
+		}
 	}
 }

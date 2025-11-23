@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"net/http"
 	"net/http/httptest"
@@ -9,12 +10,107 @@ import (
 	"testing"
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/config"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 	"github.com/go-chi/chi/v5"
 )
 
+// Создаем тестовый storage, который реализует обновленный интерфейс
+type TestStorage struct {
+	gauges   map[string]float64
+	counters map[string]int64
+}
+
+func NewTestStorage() *TestStorage {
+	return &TestStorage{
+		gauges:   make(map[string]float64),
+		counters: make(map[string]int64),
+	}
+}
+
+func (t *TestStorage) SetGauge(ctx context.Context, name string, value float64) {
+	t.gauges[name] = value
+}
+
+func (t *TestStorage) IncrementCounter(ctx context.Context, name string, delta int64) {
+	t.counters[name] += delta
+}
+
+func (t *TestStorage) GetMetric(ctx context.Context, name string, metricType models.MetricType) (interface{}, bool) {
+	switch metricType {
+	case models.Gauge:
+		value, exists := t.gauges[name]
+		return value, exists
+	case models.Counter:
+		value, exists := t.counters[name]
+		return value, exists
+	default:
+		return nil, false
+	}
+}
+
+func (t *TestStorage) GetAllMetrics(ctx context.Context) (map[string]float64, map[string]int64) {
+	gaugesCopy := make(map[string]float64, len(t.gauges))
+	for k, v := range t.gauges {
+		gaugesCopy[k] = v
+	}
+
+	countersCopy := make(map[string]int64, len(t.counters))
+	for k, v := range t.counters {
+		countersCopy[k] = v
+	}
+
+	return gaugesCopy, countersCopy
+}
+
+func (t *TestStorage) GetMetricForJSON(ctx context.Context, name string, metricType models.MetricType) models.Metrics {
+	switch metricType {
+	case models.Gauge:
+		if value, exists := t.gauges[name]; exists {
+			return models.Metrics{
+				ID:    name,
+				MType: "gauge",
+				Value: &value,
+			}
+		}
+	case models.Counter:
+		if value, exists := t.counters[name]; exists {
+			return models.Metrics{
+				ID:    name,
+				MType: "counter",
+				Delta: &value,
+			}
+		}
+	}
+	return models.Metrics{}
+}
+
+func (t *TestStorage) SaveToFile(ctx context.Context, filename string) error {
+	return nil
+}
+
+func (t *TestStorage) LoadFromFile(ctx context.Context, filename string) error {
+	return nil
+}
+
+func (t *TestStorage) UpdateMetricsBatch(ctx context.Context, metrics []models.Metrics) error {
+	for _, metric := range metrics {
+		switch metric.MType {
+		case "gauge":
+			if metric.Value != nil {
+				t.gauges[metric.ID] = *metric.Value
+			}
+		case "counter":
+			if metric.Delta != nil {
+				t.counters[metric.ID] += *metric.Delta
+			}
+		}
+	}
+	return nil
+}
+
 // Тесты для обработчика getMetrics
 func TestGetMetricsHandler(t *testing.T) {
-	storage := NewMemStorage()
+	storage := NewTestStorage()
 	handler := getMetrics(storage)
 
 	tests := []struct {
@@ -83,11 +179,11 @@ func TestGetMetricsHandler(t *testing.T) {
 
 // Тесты для обработчика sendMetrics
 func TestSendMetrics(t *testing.T) {
-	storage := NewMemStorage()
+	storage := NewTestStorage()
 
 	// Добавляем тестовые данные
-	storage.SetGauge("temperature", 25.5)
-	storage.IncrementCounter("requests", 10)
+	storage.SetGauge(context.Background(), "temperature", 25.5)
+	storage.IncrementCounter(context.Background(), "requests", 10)
 
 	tests := []struct {
 		name           string
@@ -156,13 +252,13 @@ func TestSendMetrics(t *testing.T) {
 
 // Тесты для обработчика summaryMetrics
 func TestSummaryMetrics(t *testing.T) {
-	storage := NewMemStorage()
+	storage := NewTestStorage()
 
 	// Добавляем тестовые данные
-	storage.SetGauge("temperature", 25.5)
-	storage.SetGauge("memory", 1024.0)
-	storage.IncrementCounter("requests", 10)
-	storage.IncrementCounter("errors", 2)
+	storage.SetGauge(context.Background(), "temperature", 25.5)
+	storage.SetGauge(context.Background(), "memory", 1024.0)
+	storage.IncrementCounter(context.Background(), "requests", 10)
+	storage.IncrementCounter(context.Background(), "errors", 2)
 
 	tests := []struct {
 		name           string
@@ -216,7 +312,7 @@ func TestSummaryMetrics(t *testing.T) {
 
 // Тесты для пустого хранилища
 func TestSummaryMetricsEmpty(t *testing.T) {
-	storage := NewMemStorage()
+	storage := NewTestStorage()
 
 	req, err := http.NewRequest("GET", "/", nil)
 	if err != nil {
@@ -246,7 +342,7 @@ func TestSummaryMetricsEmpty(t *testing.T) {
 
 // Тесты для проверки инкремента счетчика
 func TestCounterIncrement(t *testing.T) {
-	storage := NewMemStorage()
+	storage := NewTestStorage()
 	handler := getMetrics(storage)
 
 	// Первое увеличение счетчика
@@ -271,7 +367,7 @@ func TestCounterIncrement(t *testing.T) {
 	}
 
 	// Проверяем итоговое значение
-	gauge, counter := storage.GetAllMetrics()
+	gauge, counter := storage.GetAllMetrics(context.Background())
 	if counter["requests"] != 8 {
 		t.Errorf("Неверное итоговое значение счетчика: получили %v хотели %v", counter["requests"], 8)
 	}
@@ -283,7 +379,7 @@ func TestCounterIncrement(t *testing.T) {
 
 // Тесты для проверки перезаписи gauge
 func TestGaugeOverwrite(t *testing.T) {
-	storage := NewMemStorage()
+	storage := NewTestStorage()
 	handler := getMetrics(storage)
 
 	// Первая установка gauge
@@ -308,7 +404,7 @@ func TestGaugeOverwrite(t *testing.T) {
 	}
 
 	// Проверяем итоговое значение
-	gauge, counter := storage.GetAllMetrics()
+	gauge, counter := storage.GetAllMetrics(context.Background())
 	if gauge["temperature"] != 30.2 {
 		t.Errorf("Неверное итоговое значение gauge: получили %v хотели %v", gauge["temperature"], 30.2)
 	}

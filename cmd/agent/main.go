@@ -17,6 +17,7 @@ import (
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/compress"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/config"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/hash"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/retry"
@@ -135,6 +136,9 @@ func sendMetricsBatchOnce(ctx context.Context, cfg models.Config, metrics []mode
 		return fmt.Errorf("error encoding JSON: %w", err)
 	}
 
+	// ВЫЧИСЛЯЕМ ХЕШ перед сжатием
+	hashValue := hash.ComputeHMACSHA256(jsonData, cfg.Key)
+
 	// Сжимаем данные
 	compressedData, err := compress.GzipCompress(jsonData)
 	if err != nil {
@@ -158,6 +162,11 @@ func sendMetricsBatchOnce(ctx context.Context, cfg models.Config, metrics []mode
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set("Accept-Encoding", "gzip")
+
+	// ДОБАВЛЯЕМ ХЕШ В ЗАГОЛОВОК (если ключ установлен)
+	if hashValue != "" {
+		req.Header.Set("HashSHA256", hashValue)
+	}
 
 	// Отправляем запрос
 	response, err := client.Do(req)
@@ -285,6 +294,9 @@ func sendMetric(ctx context.Context, metricType string, name string, value inter
 		return fmt.Errorf("error encoding JSON: %w", err)
 	}
 
+	// ВЫЧИСЛЯЕМ ХЕШ перед сжатием
+	hashValue := hash.ComputeHMACSHA256(jsonData, cfg.Key)
+
 	// Сжимаем данные
 	compressedData, err := compress.GzipCompress(jsonData)
 	if err != nil {
@@ -306,6 +318,11 @@ func sendMetric(ctx context.Context, metricType string, name string, value inter
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set("Accept-Encoding", "gzip")
+
+	// ДОБАВЛЯЕМ ХЕШ В ЗАГОЛОВОК (если ключ установлен)
+	if hashValue != "" {
+		req.Header.Set("HashSHA256", hashValue)
+	}
 
 	// Отправляем запрос
 	response, err := client.Do(req)

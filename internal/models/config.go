@@ -13,4 +13,5 @@ type Config struct {
 	PollInterval    time.Duration // для агента
 	ReportInterval  time.Duration // для агента
 	DatabaseDSN     string
+	Key             string // ключ для шифрования
 }

@@ -74,6 +74,7 @@ func ParseAgentFlags() models.Config {
 		pollInterval   int64  // в секундах для совместимости с тестами
 		reportInterval int64  // в секундах для совместимости с тестами
 		key            string // секретный ключ
+		rateLimit      int64  // rate limit
 	)
 
 	// Регистрируем флаги для агента
@@ -81,6 +82,7 @@ func ParseAgentFlags() models.Config {
 	flag.Int64Var(&pollInterval, "p", 2, "poll interval in seconds")
 	flag.Int64Var(&reportInterval, "r", 10, "report interval in seconds")
 	flag.StringVar(&key, "k", "", "secret key for request signing")
+	flag.Int64Var(&rateLimit, "l", 0, "rate limit")
 
 	flag.Parse()
 
@@ -96,6 +98,10 @@ func ParseAgentFlags() models.Config {
 		key = envKey
 	}
 
+	if envRateLimit := os.Getenv("RATE_LIMIT"); envRateLimit != "" {
+		key = envRateLimit
+	}
+
 	// Парсим адрес на server и port
 	server, port := parseAddress(address)
 
@@ -106,6 +112,7 @@ func ParseAgentFlags() models.Config {
 		PollInterval:   time.Duration(pollInterval) * time.Second,
 		ReportInterval: time.Duration(reportInterval) * time.Second,
 		Key:            key,
+		RateLimit:      rateLimit,
 	}
 }
 
@@ -128,6 +135,7 @@ func getEnvInt64(key string, defaultVal int64) int64 {
 	return defaultVal
 }
 
+// parseAddress разбивает адрес на сервер и порт
 func parseAddress(address string) (string, string) {
 	parts := strings.Split(address, ":")
 	if len(parts) == 2 {

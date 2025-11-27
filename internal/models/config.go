@@ -14,4 +14,5 @@ type Config struct {
 	ReportInterval  time.Duration // для агента
 	DatabaseDSN     string
 	Key             string // ключ для шифрования
+	RateLimit       int64  // количество потоков
 }

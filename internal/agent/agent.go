@@ -42,13 +42,13 @@ func NewMetricsAgent(cfg models.Config) *MetricsAgent {
 // Start запускает все горутины агента
 func (a *MetricsAgent) Start() {
 	logger.Log.Info("Starting metrics agent",
-		zap.Int("rate_limit", a.cfg.RateLimit),
+		zap.Int64("rate_limit", a.cfg.RateLimit),
 		zap.Duration("poll_interval", a.cfg.PollInterval),
 		zap.Duration("report_interval", a.cfg.ReportInterval),
 	)
 
 	// Запускаем воркеры для отправки метрик
-	for i := 0; i < a.cfg.RateLimit; i++ {
+	for i := 0; i < int(a.cfg.RateLimit); i++ {
 		a.wg.Add(1)
 		go a.worker(i)
 	}

@@ -17,6 +17,7 @@ import (
 // MetricsAgent управляет сбором и отправкой метрик
 type MetricsAgent struct {
 	cfg         models.Config
+	sender      MetricsSender
 	metricsChan chan []models.Metrics
 	workerPool  chan struct{}
 	wg          sync.WaitGroup
@@ -27,12 +28,13 @@ type MetricsAgent struct {
 }
 
 // NewMetricsAgent создает новый экземпляр агента
-func NewMetricsAgent(cfg models.Config) *MetricsAgent {
+func NewMetricsAgent(cfg models.Config, sender MetricsSender) *MetricsAgent {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &MetricsAgent{
 		cfg:         cfg,
-		metricsChan: make(chan []models.Metrics, 100),   // буферизованный канал
-		workerPool:  make(chan struct{}, cfg.RateLimit), // worker pool с ограничением
+		sender:      sender,
+		metricsChan: make(chan []models.Metrics, 100),
+		workerPool:  make(chan struct{}, cfg.RateLimit),
 		ctx:         ctx,
 		cancel:      cancel,
 		pollCount:   0,
@@ -47,17 +49,14 @@ func (a *MetricsAgent) Start() {
 		zap.Duration("report_interval", a.cfg.ReportInterval),
 	)
 
-	// Запускаем воркеры для отправки метрик
 	for i := 0; i < int(a.cfg.RateLimit); i++ {
 		a.wg.Add(1)
 		go a.worker(i)
 	}
 
-	// ГОРУТИНА 1: Сбор runtime метрик
 	a.wg.Add(1)
 	go a.collectRuntimeMetrics()
 
-	// ГОРУТИНА 2: Сбор метрик gopsutil
 	a.wg.Add(1)
 	go a.collectGopsutilMetrics()
 
@@ -91,23 +90,20 @@ func (a *MetricsAgent) worker(id int) {
 				continue
 			}
 
-			// Занимаем слот в worker pool (ограничение RPS)
 			select {
 			case a.workerPool <- struct{}{}:
-				// Слот получен, можно отправлять
 				logger.Log.Debug("Worker sending metrics",
 					zap.Int("worker_id", id),
 					zap.Int("metrics_count", len(metrics)),
 				)
 
-				if err := a.sendMetricsBatch(metrics); err != nil {
+				if err := a.sender.SendMetricsBatch(a.ctx, metrics); err != nil {
 					logger.Log.Error("Worker error sending metrics",
 						zap.Int("worker_id", id),
 						zap.Error(err),
 					)
 				}
 
-				// Освобождаем слот
 				<-a.workerPool
 
 			case <-a.ctx.Done():
@@ -145,10 +141,8 @@ func (a *MetricsAgent) collectRuntimeMetrics() {
 				zap.Int64("poll_count", pollCount),
 			)
 
-			// Отправляем метрики в канал для обработки воркерами
 			select {
 			case a.metricsChan <- metrics:
-				// Метрики отправлены в канал
 			case <-a.ctx.Done():
 				return
 			default:
@@ -179,10 +173,8 @@ func (a *MetricsAgent) collectGopsutilMetrics() {
 				zap.Int("metrics_count", len(metrics)),
 			)
 
-			// Отправляем метрики в канал для обработки воркерами
 			select {
 			case a.metricsChan <- metrics:
-				// Метрики отправлены в канал
 			case <-a.ctx.Done():
 				return
 			default:
@@ -203,7 +195,6 @@ func (a *MetricsAgent) getRuntimeMetrics(pollCount int64) []models.Metrics {
 
 	var metrics []models.Metrics
 
-	// Runtime метрики из memStats
 	runtimeMetrics := map[string]float64{
 		"Alloc":         float64(memStats.Alloc),
 		"BuckHashSys":   float64(memStats.BuckHashSys),
@@ -235,7 +226,6 @@ func (a *MetricsAgent) getRuntimeMetrics(pollCount int64) []models.Metrics {
 		"RandomValue":   a.getRandomValue(),
 	}
 
-	// Добавляем gauge метрики в батч
 	for name, value := range runtimeMetrics {
 		valueCopy := value
 		metrics = append(metrics, models.Metrics{
@@ -245,7 +235,6 @@ func (a *MetricsAgent) getRuntimeMetrics(pollCount int64) []models.Metrics {
 		})
 	}
 
-	// Добавляем counter метрику в батч
 	metrics = append(metrics, models.Metrics{
 		ID:    "PollCount",
 		MType: "counter",
@@ -259,7 +248,6 @@ func (a *MetricsAgent) getRuntimeMetrics(pollCount int64) []models.Metrics {
 func (a *MetricsAgent) getGopsutilMetrics() []models.Metrics {
 	var metrics []models.Metrics
 
-	// TotalMemory
 	if vmStat, err := mem.VirtualMemory(); err == nil {
 		totalMem := float64(vmStat.Total)
 		metrics = append(metrics, models.Metrics{
@@ -271,7 +259,6 @@ func (a *MetricsAgent) getGopsutilMetrics() []models.Metrics {
 		logger.Log.Error("Failed to get TotalMemory", zap.Error(err))
 	}
 
-	// FreeMemory
 	if vmStat, err := mem.VirtualMemory(); err == nil {
 		freeMem := float64(vmStat.Free)
 		metrics = append(metrics, models.Metrics{
@@ -283,8 +270,7 @@ func (a *MetricsAgent) getGopsutilMetrics() []models.Metrics {
 		logger.Log.Error("Failed to get FreeMemory", zap.Error(err))
 	}
 
-	// CPU utilization (по количеству CPU)
-	if cpuPercents, err := cpu.Percent(0, true); err == nil { // true - по всем ядрам
+	if cpuPercents, err := cpu.Percent(0, true); err == nil {
 		for i, percent := range cpuPercents {
 			cpuUtil := percent
 			metrics = append(metrics, models.Metrics{
@@ -302,12 +288,5 @@ func (a *MetricsAgent) getGopsutilMetrics() []models.Metrics {
 
 // getRandomValue возвращает случайное значение
 func (a *MetricsAgent) getRandomValue() float64 {
-	return float64(a.pollCount % 100) // Простая реализация для примера
-}
-
-// sendMetricsBatch отправляет батч метрик (реализация будет в основном файле)
-func (a *MetricsAgent) sendMetricsBatch(metrics []models.Metrics) error {
-	// Эта функция будет реализована в основном файле
-	// Здесь только заглушка
-	return nil
+	return float64(a.pollCount % 100)
 }

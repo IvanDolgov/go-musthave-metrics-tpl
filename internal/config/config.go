@@ -82,7 +82,7 @@ func ParseAgentFlags() models.Config {
 	flag.Int64Var(&pollInterval, "p", 2, "poll interval in seconds")
 	flag.Int64Var(&reportInterval, "r", 10, "report interval in seconds")
 	flag.StringVar(&key, "k", "", "secret key for request signing")
-	flag.Int64Var(&rateLimit, "l", 0, "rate limit")
+	flag.Int64Var(&rateLimit, "l", 1, "rate limit")
 
 	flag.Parse()
 

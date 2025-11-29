@@ -109,17 +109,25 @@ func run(ctx context.Context, cfg models.Config) error {
 }
 
 func main() {
+	// Получаем конфигурацию
 	cfg := config.ParseAgentFlags()
 
+	// Инициализируем логер
 	if err := logger.Initialize("info"); err != nil {
 		fmt.Fprintf(os.Stderr, "Logger initialization error: %v\n", err)
 		os.Exit(1)
 	}
 	defer logger.Log.Sync()
 
+	// Переопределяем метод отправки метрик в агенте
+	// Это нужно сделать до создания агента
+	// В реальном проекте лучше использовать dependency injection
+
+	// Создаем корневой контекст
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Запускаем приложение с контекстом
 	if err := run(ctx, cfg); err != nil {
 		logger.Log.Error("Application error", zap.Error(err))
 		os.Exit(1)

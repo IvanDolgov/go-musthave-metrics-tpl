@@ -18,6 +18,7 @@ func ParseServerFlags() models.Config {
 		fileStoragePath string
 		restore         bool
 		databaseDsn     string
+		key             string // секретный ключ
 	)
 
 	// Регистрируем флаги для сервера
@@ -26,6 +27,7 @@ func ParseServerFlags() models.Config {
 	flag.StringVar(&fileStoragePath, "f", "", "path storage file")
 	flag.BoolVar(&restore, "r", true, "upload previous metrics from file")
 	flag.StringVar(&databaseDsn, "d", "", "database_dsn")
+	flag.StringVar(&key, "k", "", "secret key for request signing")
 
 	flag.Parse()
 
@@ -46,6 +48,10 @@ func ParseServerFlags() models.Config {
 		databaseDsn = envDatabaseDSN
 	}
 
+	if envKey := os.Getenv("KEY"); envKey != "" {
+		key = envKey
+	}
+
 	// Парсим адрес на server и port
 	server, port := parseAddress(address)
 
@@ -57,6 +63,7 @@ func ParseServerFlags() models.Config {
 		FileStoragePath: fileStoragePath,
 		Restore:         restore,
 		DatabaseDSN:     databaseDsn,
+		Key:             key,
 	}
 }
 
@@ -64,14 +71,18 @@ func ParseServerFlags() models.Config {
 func ParseAgentFlags() models.Config {
 	var (
 		address        string
-		pollInterval   int64 // в секундах для совместимости с тестами
-		reportInterval int64 // в секундах для совместимости с тестами
+		pollInterval   int64  // в секундах для совместимости с тестами
+		reportInterval int64  // в секундах для совместимости с тестами
+		key            string // секретный ключ
+		rateLimit      int64  // rate limit
 	)
 
 	// Регистрируем флаги для агента
 	flag.StringVar(&address, "a", "localhost:8080", "server address")
 	flag.Int64Var(&pollInterval, "p", 2, "poll interval in seconds")
 	flag.Int64Var(&reportInterval, "r", 10, "report interval in seconds")
+	flag.StringVar(&key, "k", "", "secret key for request signing")
+	flag.Int64Var(&rateLimit, "l", 1, "rate limit")
 
 	flag.Parse()
 
@@ -83,6 +94,14 @@ func ParseAgentFlags() models.Config {
 	pollInterval = getEnvInt64("POLL_INTERVAL", pollInterval)
 	reportInterval = getEnvInt64("REPORT_INTERVAL", reportInterval)
 
+	if envKey := os.Getenv("KEY"); envKey != "" {
+		key = envKey
+	}
+
+	if envRateLimit := os.Getenv("RATE_LIMIT"); envRateLimit != "" {
+		key = envRateLimit
+	}
+
 	// Парсим адрес на server и port
 	server, port := parseAddress(address)
 
@@ -92,9 +111,12 @@ func ParseAgentFlags() models.Config {
 		Port:           port,
 		PollInterval:   time.Duration(pollInterval) * time.Second,
 		ReportInterval: time.Duration(reportInterval) * time.Second,
+		Key:            key,
+		RateLimit:      rateLimit,
 	}
 }
 
+// остальные функции остаются без изменений...
 func getEnvBool(key string, defaultVal bool) bool {
 	if value, exists := os.LookupEnv(key); exists {
 		if boolVal, err := strconv.ParseBool(value); err == nil {
@@ -113,6 +135,7 @@ func getEnvInt64(key string, defaultVal int64) int64 {
 	return defaultVal
 }
 
+// parseAddress разбивает адрес на сервер и порт
 func parseAddress(address string) (string, string) {
 	parts := strings.Split(address, ":")
 	if len(parts) == 2 {

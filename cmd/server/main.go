@@ -80,6 +80,12 @@ func run(cfg models.Config) error {
 	router.Use(middleware.WithLogging)
 	router.Use(middleware.WithGzip)
 
+	// Middleware для проверки хеша ДО обработки тела запроса
+	router.Use(middleware.HashValidation(cfg.Key))
+
+	// Middleware для добавления хеша в исходящие ответы
+	router.Use(middleware.HashResponse(cfg.Key))
+
 	// Middleware для синхронного сохранения (только для file storage)
 	if cfg.StoreInterval == 0 {
 		if memStorage, ok := store.(*storage.MemStorage); ok && cfg.FileStoragePath != "" {

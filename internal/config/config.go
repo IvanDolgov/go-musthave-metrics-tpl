@@ -19,6 +19,8 @@ func ParseServerFlags() models.Config {
 		restore         bool
 		databaseDsn     string
 		key             string // секретный ключ
+		auditFile       string // путь к файлу аудита
+		auditURL        string // URL для отправки аудита
 	)
 
 	// Регистрируем флаги для сервера
@@ -28,6 +30,8 @@ func ParseServerFlags() models.Config {
 	flag.BoolVar(&restore, "r", true, "upload previous metrics from file")
 	flag.StringVar(&databaseDsn, "d", "", "database_dsn")
 	flag.StringVar(&key, "k", "", "secret key for request signing")
+	flag.StringVar(&auditFile, "audit-file", "", "path to audit log file")
+	flag.StringVar(&auditURL, "audit-url", "", "URL for remote audit logging")
 
 	flag.Parse()
 
@@ -52,6 +56,15 @@ func ParseServerFlags() models.Config {
 		key = envKey
 	}
 
+	// Новые переменные окружения для аудита
+	if envAuditFile := os.Getenv("AUDIT_FILE"); envAuditFile != "" {
+		auditFile = envAuditFile
+	}
+
+	if envAuditURL := os.Getenv("AUDIT_URL"); envAuditURL != "" {
+		auditURL = envAuditURL
+	}
+
 	// Парсим адрес на server и port
 	server, port := parseAddress(address)
 
@@ -64,6 +77,8 @@ func ParseServerFlags() models.Config {
 		Restore:         restore,
 		DatabaseDSN:     databaseDsn,
 		Key:             key,
+		AuditFile:       auditFile,
+		AuditURL:        auditURL,
 	}
 }
 

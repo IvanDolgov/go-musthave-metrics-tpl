@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/audit"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/config"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/middleware"
@@ -24,6 +25,9 @@ import (
 func run(cfg models.Config) error {
 	var store storage.Storage
 	var dbStorage postgres.DatabaseStorage
+
+	// ИНИЦИАЛИЗАЦИЯ АУДИТА
+	auditSubject := audit.NewConcreteSubject()
 
 	// Создаем корневой контекст
 	ctx := context.Background()
@@ -70,6 +74,20 @@ func run(cfg models.Config) error {
 		store = storage.NewMemStorage()
 	}
 
+	// Регистрируем файлового наблюдателя, если указан путь
+	if cfg.AuditFile != "" {
+		fileObserver := audit.NewFileObserver(cfg.AuditFile)
+		auditSubject.Register(fileObserver)
+		logger.Log.Info("File audit enabled", zap.String("file", cfg.AuditFile))
+	}
+
+	// Регистрируем удаленного наблюдателя, если указан URL
+	if cfg.AuditURL != "" {
+		remoteObserver := audit.NewRemoteObserver(cfg.AuditURL)
+		auditSubject.Register(remoteObserver)
+		logger.Log.Info("Remote audit enabled", zap.String("url", cfg.AuditURL))
+	}
+
 	// создаем строку с сервером
 	fullPathServer := buildServerAddress(cfg.Server, cfg.Port)
 
@@ -85,6 +103,9 @@ func run(cfg models.Config) error {
 
 	// Middleware для добавления хеша в исходящие ответы
 	router.Use(middleware.HashResponse(cfg.Key))
+
+	// Middleware для аудита
+	router.Use(middleware.WithAudit(auditSubject))
 
 	// Middleware для синхронного сохранения (только для file storage)
 	if cfg.StoreInterval == 0 {

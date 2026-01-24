@@ -8,14 +8,14 @@ import (
 	"go.uber.org/zap"
 )
 
-// withLogging добавляет логирование для всех запросов и ответов
+// WithLogging добавляет логирование для всех запросов и ответов
 func WithLogging(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// засекаем время начала обработки запроса
 		start := time.Now()
 
 		// Создаем кастомный ResponseWriter для перехвата статуса и размера ответа
-		wrapped := &responseWriter{
+		wrapped := &loggingResponseWriter{
 			ResponseWriter: w,
 			statusCode:     http.StatusOK,
 		}
@@ -38,15 +38,16 @@ func WithLogging(h http.Handler) http.Handler {
 	})
 }
 
-// responseWriter обертка для http.ResponseWriter для перехвата статуса и размера ответа
-type responseWriter struct {
+// loggingResponseWriter обертка для http.ResponseWriter для перехвата статуса и размера ответа
+// Используется для логирования
+type loggingResponseWriter struct {
 	http.ResponseWriter
 	statusCode   int
 	responseSize int
 	wroteHeader  bool
 }
 
-func (rw *responseWriter) WriteHeader(code int) {
+func (rw *loggingResponseWriter) WriteHeader(code int) {
 	if !rw.wroteHeader {
 		rw.statusCode = code
 		rw.ResponseWriter.WriteHeader(code)
@@ -54,7 +55,7 @@ func (rw *responseWriter) WriteHeader(code int) {
 	}
 }
 
-func (rw *responseWriter) Write(b []byte) (int, error) {
+func (rw *loggingResponseWriter) Write(b []byte) (int, error) {
 	if !rw.wroteHeader {
 		rw.WriteHeader(http.StatusOK)
 	}
@@ -64,11 +65,11 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 }
 
 // Status возвращает статус код ответа
-func (rw *responseWriter) Status() int {
+func (rw *loggingResponseWriter) Status() int {
 	return rw.statusCode
 }
 
 // Size возвращает размер ответа
-func (rw *responseWriter) Size() int {
+func (rw *loggingResponseWriter) Size() int {
 	return rw.responseSize
 }

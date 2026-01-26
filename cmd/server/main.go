@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-    _ "net/http/pprof"
 	"os"
 	"os/signal"
 	"strings"
@@ -20,6 +19,8 @@ import (
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/storage/postgres"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
+
+	_ "net/http/pprof" // профилирование
 )
 
 // run запускает приложение с переданной конфигурацией
@@ -139,6 +140,9 @@ func run(cfg models.Config) error {
 	// Хендлер проверки подключения к БД
 	router.Get(`/ping`, checkConnectDatabase(dbStorage))
 	router.Get(`/ping/`, checkConnectDatabase(dbStorage))
+
+	// Регистрируем pprof handlers
+	router.Mount("/debug/pprof", http.DefaultServeMux)
 
 	// HTTP сервер
 	server := &http.Server{

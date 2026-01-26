@@ -628,6 +628,12 @@ func TestResponseWriterMethods(t *testing.T) {
 		if mockWriter.Header().Get("X-Test") != "value" {
 			t.Error("hashResponseWriter.Header() should return underlying writer's header map")
 		}
+
+		// ДОБАВИТЬ: явно используем поле key, чтобы компилятор не ругался
+		// Проверяем что поле key установлено правильно
+		if hw.key != "test" {
+			t.Errorf("Expected key to be 'test', got %s", hw.key)
+		}
 	})
 }
 

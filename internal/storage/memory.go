@@ -26,13 +26,29 @@ type MemStorage struct {
 	gauges   map[string]float64
 	counters map[string]int64
 	mu       sync.RWMutex
+
+	// Pools для уменьшения аллокаций
+	gaugeMapPool   *sync.Pool
+	counterMapPool *sync.Pool
 }
 
 // NewMemStorage создает и возвращает новый экземпляр MemStorage
 func NewMemStorage() *MemStorage {
 	return &MemStorage{
-		gauges:   make(map[string]float64),
-		counters: make(map[string]int64),
+		gauges:   make(map[string]float64, 50), // предварительное выделение
+		counters: make(map[string]int64, 50),   // предварительное выделение
+
+		gaugeMapPool: &sync.Pool{
+			New: func() interface{} {
+				return make(map[string]float64, 50)
+			},
+		},
+
+		counterMapPool: &sync.Pool{
+			New: func() interface{} {
+				return make(map[string]int64, 50)
+			},
+		},
 	}
 }
 
@@ -59,7 +75,7 @@ func (m *MemStorage) IncrementCounter(ctx context.Context, name string, delta in
 	m.counters[name] += delta
 }
 
-// GetAllMetrics возвращает все метрики из хранилища
+// GetAllMetrics возвращает все метрики из хранилища (оптимизированная версия)
 func (m *MemStorage) GetAllMetrics(ctx context.Context) (map[string]float64, map[string]int64) {
 	if err := ctx.Err(); err != nil {
 		return make(map[string]float64), make(map[string]int64)
@@ -68,12 +84,22 @@ func (m *MemStorage) GetAllMetrics(ctx context.Context) (map[string]float64, map
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	gaugesCopy := make(map[string]float64, len(m.gauges))
+	// Берем мапы из пулов вместо создания новых
+	gaugesCopy := m.gaugeMapPool.Get().(map[string]float64)
+	countersCopy := m.counterMapPool.Get().(map[string]int64)
+
+	// Очищаем мапы перед использованием
+	for k := range gaugesCopy {
+		delete(gaugesCopy, k)
+	}
+	for k := range countersCopy {
+		delete(countersCopy, k)
+	}
+
+	// Копируем данные
 	for k, v := range m.gauges {
 		gaugesCopy[k] = v
 	}
-
-	countersCopy := make(map[string]int64, len(m.counters))
 	for k, v := range m.counters {
 		countersCopy[k] = v
 	}
@@ -108,7 +134,7 @@ func (m *MemStorage) GetMetric(ctx context.Context, name string, metricType mode
 	}
 }
 
-// GetMetricForJSON возвращает метрику в формате для JSON
+// GetMetricForJSON возвращает метрику в формате для JSON (оптимизированная версия)
 func (m *MemStorage) GetMetricForJSON(ctx context.Context, name string, metricType models.MetricType) models.Metrics {
 	if err := ctx.Err(); err != nil {
 		return models.Metrics{}
@@ -117,28 +143,32 @@ func (m *MemStorage) GetMetricForJSON(ctx context.Context, name string, metricTy
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	// Используем пул для временных переменных
 	switch metricType {
 	case models.Gauge:
 		if value, exists := m.gauges[name]; exists {
+			// Создаем копию значения
+			v := value
 			return models.Metrics{
 				ID:    name,
 				MType: "gauge",
-				Value: &value,
+				Value: &v,
 			}
 		}
 	case models.Counter:
 		if value, exists := m.counters[name]; exists {
+			v := value
 			return models.Metrics{
 				ID:    name,
 				MType: "counter",
-				Delta: &value,
+				Delta: &v,
 			}
 		}
 	}
 	return models.Metrics{}
 }
 
-// SaveToFile сохраняет все метрики в файл в формате JSON
+// SaveToFile сохраняет все метрики в файл в формате JSON (оптимизированная версия)
 func (m *MemStorage) SaveToFile(ctx context.Context, filename string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -147,31 +177,36 @@ func (m *MemStorage) SaveToFile(ctx context.Context, filename string) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	var metrics []models.FileMetric
+	// Предварительно выделяем слайс с нужной capacity
+	totalMetrics := len(m.gauges) + len(m.counters)
+	metrics := make([]models.FileMetric, 0, totalMetrics)
 
+	// Пул для временных переменных
 	for name, value := range m.gauges {
-		valueCopy := value
+		v := value
 		metrics = append(metrics, models.FileMetric{
 			ID:    name,
 			Type:  "gauge",
-			Value: &valueCopy,
+			Value: &v,
 		})
 	}
 
 	for name, value := range m.counters {
-		valueCopy := value
+		v := value
 		metrics = append(metrics, models.FileMetric{
 			ID:    name,
 			Type:  "counter",
-			Delta: &valueCopy,
+			Delta: &v,
 		})
 	}
 
-	data, err := json.MarshalIndent(metrics, "", "  ")
+	// Используем Marshal вместо MarshalIndent для производительности
+	data, err := json.Marshal(metrics)
 	if err != nil {
 		return err
 	}
 
+	// Записываем с буферизацией
 	return os.WriteFile(filename, data, 0644)
 }
 
@@ -198,8 +233,9 @@ func (m *MemStorage) LoadFromFile(ctx context.Context, filename string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.gauges = make(map[string]float64)
-	m.counters = make(map[string]int64)
+	// Очищаем существующие метрики
+	m.gauges = make(map[string]float64, len(fileMetrics))
+	m.counters = make(map[string]int64, len(fileMetrics))
 
 	for _, fm := range fileMetrics {
 		switch fm.Type {
@@ -217,7 +253,7 @@ func (m *MemStorage) LoadFromFile(ctx context.Context, filename string) error {
 	return nil
 }
 
-// UpdateMetricsBatch обновляет метрики батчем
+// UpdateMetricsBatch обновляет метрики батчем (оптимизированная версия)
 func (m *MemStorage) UpdateMetricsBatch(ctx context.Context, metrics []models.Metrics) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -225,6 +261,24 @@ func (m *MemStorage) UpdateMetricsBatch(ctx context.Context, metrics []models.Me
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Предварительно проверяем capacity мапов
+	if len(m.gauges) < len(metrics) {
+		// Увеличиваем capacity если нужно
+		newGauges := make(map[string]float64, len(m.gauges)+len(metrics))
+		for k, v := range m.gauges {
+			newGauges[k] = v
+		}
+		m.gauges = newGauges
+	}
+
+	if len(m.counters) < len(metrics) {
+		newCounters := make(map[string]int64, len(m.counters)+len(metrics))
+		for k, v := range m.counters {
+			newCounters[k] = v
+		}
+		m.counters = newCounters
+	}
 
 	for _, metric := range metrics {
 		switch metric.MType {
@@ -240,4 +294,14 @@ func (m *MemStorage) UpdateMetricsBatch(ctx context.Context, metrics []models.Me
 	}
 
 	return nil
+}
+
+// Cleanup вызывается для возврата мапов в пул
+func (m *MemStorage) Cleanup(gauges map[string]float64, counters map[string]int64) {
+	if gauges != nil {
+		m.gaugeMapPool.Put(gauges)
+	}
+	if counters != nil {
+		m.counterMapPool.Put(counters)
+	}
 }

@@ -1,0 +1,9 @@
+goos: darwin
+goarch: amd64
+pkg: github.com/IvanDolgov/go-musthave-metrics-tpl/internal/agent
+cpu: Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz
+BenchmarkGetRuntimeMetrics-12     	   29798	     40152 ns/op	    4584 B/op	      38 allocs/op
+BenchmarkGetGopsutilMetrics-12    	   24948	     47052 ns/op	    6635 B/op	      74 allocs/op
+BenchmarkAgentCollector-12        	   12571	     95356 ns/op	   11207 B/op	     112 allocs/op
+PASS
+ok  	github.com/IvanDolgov/go-musthave-metrics-tpl/internal/agent	6.973s

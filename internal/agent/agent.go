@@ -7,37 +7,65 @@ import (
 	"sync"
 	"time"
 
-	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
-	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/mem"
 	"go.uber.org/zap"
+
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 )
 
-// MetricsAgent управляет сбором и отправкой метрик
+// MetricsAgent собирает и отправляет метрики
 type MetricsAgent struct {
 	cfg         models.Config
 	sender      MetricsSender
-	metricsChan chan []models.Metrics
-	workerPool  chan struct{}
-	wg          sync.WaitGroup
 	ctx         context.Context
 	cancel      context.CancelFunc
-	pollCount   int64
+	wg          sync.WaitGroup
+	metricsChan chan []models.Metrics
+	workerPool  chan struct{}
 	mu          sync.RWMutex
+	pollCount   int64
 }
+
+// Pools для уменьшения аллокаций
+var (
+	metricsPool = sync.Pool{
+		New: func() interface{} {
+			return make([]models.Metrics, 0, 36) // предварительное выделение
+		},
+	}
+
+	runtimeMetricsPool = sync.Pool{
+		New: func() interface{} {
+			// Слайс для runtime метрик (35 gauge + 1 counter)
+			metrics := make([]models.Metrics, 36)
+			// Предварительно инициализируем структуры
+			for i := range metrics {
+				metrics[i] = models.Metrics{}
+			}
+			return metrics
+		},
+	}
+)
 
 // NewMetricsAgent создает новый экземпляр агента
 func NewMetricsAgent(cfg models.Config, sender MetricsSender) *MetricsAgent {
 	ctx, cancel := context.WithCancel(context.Background())
+
+	// Создаем буферизованный канал для уменьшения блокировок
+	metricsChan := make(chan []models.Metrics, 100)
+
+	// Worker pool для ограничения RPS
+	workerPool := make(chan struct{}, cfg.RateLimit)
+
 	return &MetricsAgent{
 		cfg:         cfg,
 		sender:      sender,
-		metricsChan: make(chan []models.Metrics, 100),
-		workerPool:  make(chan struct{}, cfg.RateLimit),
 		ctx:         ctx,
 		cancel:      cancel,
-		pollCount:   0,
+		metricsChan: metricsChan,
+		workerPool:  workerPool,
 	}
 }
 
@@ -54,6 +82,7 @@ func (a *MetricsAgent) Start() {
 		a.wg.Add(1)
 		go a.worker(i)
 	}
+
 	// ГОРУТИНА 1: Сбор runtime метрик
 	a.wg.Add(1)
 	go a.collectRuntimeMetrics()
@@ -89,6 +118,8 @@ func (a *MetricsAgent) worker(id int) {
 			}
 
 			if len(metrics) == 0 {
+				// Возвращаем пустой слайс в pool
+				metricsPool.Put(metrics[:0])
 				continue
 			}
 
@@ -107,8 +138,17 @@ func (a *MetricsAgent) worker(id int) {
 						zap.Error(err),
 					)
 				}
+
 				// Освобождаем слот
 				<-a.workerPool
+
+				// ВОЗВРАЩАЕМ МЕТРИКИ В POOL ПОСЛЕ ОТПРАВКИ
+				// Очищаем указатели чтобы избежать утечек памяти
+				for i := range metrics {
+					metrics[i].Value = nil
+					metrics[i].Delta = nil
+				}
+				metricsPool.Put(metrics[:0])
 
 			case <-a.ctx.Done():
 				logger.Log.Debug("Worker stopping - context done", zap.Int("worker_id", id))
@@ -144,6 +184,7 @@ func (a *MetricsAgent) collectRuntimeMetrics() {
 				zap.Int("metrics_count", len(metrics)),
 				zap.Int64("poll_count", pollCount),
 			)
+
 			// Отправляем метрики в канал для обработки воркерами
 			select {
 			case a.metricsChan <- metrics:
@@ -151,6 +192,12 @@ func (a *MetricsAgent) collectRuntimeMetrics() {
 				return
 			default:
 				logger.Log.Warn("Metrics channel full, dropping batch")
+				// Если канал полный, возвращаем метрики в pool
+				for i := range metrics {
+					metrics[i].Value = nil
+					metrics[i].Delta = nil
+				}
+				runtimeMetricsPool.Put(metrics)
 			}
 
 		case <-a.ctx.Done():
@@ -176,6 +223,7 @@ func (a *MetricsAgent) collectGopsutilMetrics() {
 			logger.Log.Debug("Collected gopsutil metrics",
 				zap.Int("metrics_count", len(metrics)),
 			)
+
 			// Отправляем метрики в канал для обработки воркерами
 			select {
 			case a.metricsChan <- metrics:
@@ -183,6 +231,12 @@ func (a *MetricsAgent) collectGopsutilMetrics() {
 				return
 			default:
 				logger.Log.Warn("Metrics channel full, dropping gopsutil batch")
+				// Возвращаем метрики в pool
+				for i := range metrics {
+					metrics[i].Value = nil
+					metrics[i].Delta = nil
+				}
+				metricsPool.Put(metrics[:0])
 			}
 
 		case <-a.ctx.Done():
@@ -192,53 +246,93 @@ func (a *MetricsAgent) collectGopsutilMetrics() {
 	}
 }
 
-// getRuntimeMetrics возвращает runtime метрики
+// getRuntimeMetrics возвращает runtime метрики (оптимизированная версия)
 func (a *MetricsAgent) getRuntimeMetrics(pollCount int64) []models.Metrics {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
 
-	var metrics []models.Metrics
-	// Runtime метрики из memStats
-	runtimeMetrics := map[string]float64{
-		"Alloc":         float64(memStats.Alloc),
-		"BuckHashSys":   float64(memStats.BuckHashSys),
-		"Frees":         float64(memStats.Frees),
-		"GCCPUFraction": memStats.GCCPUFraction,
-		"GCSys":         float64(memStats.GCSys),
-		"HeapAlloc":     float64(memStats.HeapAlloc),
-		"HeapIdle":      float64(memStats.HeapIdle),
-		"HeapInuse":     float64(memStats.HeapInuse),
-		"HeapObjects":   float64(memStats.HeapObjects),
-		"HeapReleased":  float64(memStats.HeapReleased),
-		"HeapSys":       float64(memStats.HeapSys),
-		"LastGC":        float64(memStats.LastGC),
-		"Lookups":       float64(memStats.Lookups),
-		"MCacheInuse":   float64(memStats.MCacheInuse),
-		"MCacheSys":     float64(memStats.MCacheSys),
-		"MSpanInuse":    float64(memStats.MSpanInuse),
-		"MSpanSys":      float64(memStats.MSpanSys),
-		"Mallocs":       float64(memStats.Mallocs),
-		"NextGC":        float64(memStats.NextGC),
-		"NumForcedGC":   float64(memStats.NumForcedGC),
-		"NumGC":         float64(memStats.NumGC),
-		"OtherSys":      float64(memStats.OtherSys),
-		"PauseTotalNs":  float64(memStats.PauseTotalNs),
-		"StackInuse":    float64(memStats.StackInuse),
-		"StackSys":      float64(memStats.StackSys),
-		"Sys":           float64(memStats.Sys),
-		"TotalAlloc":    float64(memStats.TotalAlloc),
-		"RandomValue":   a.getRandomValue(),
+	// Берем из пула предварительно выделенный слайс
+	metrics := runtimeMetricsPool.Get().([]models.Metrics)
+
+	// Восстанавливаем length до 0, но сохраняем capacity
+	metrics = metrics[:0]
+
+	// Предварительно вычисляем все значения
+	// Используем локальные переменные чтобы уменьшить аллокации
+	alloc := float64(memStats.Alloc)
+	buckHashSys := float64(memStats.BuckHashSys)
+	frees := float64(memStats.Frees)
+	gcCPUFraction := memStats.GCCPUFraction
+	gcSys := float64(memStats.GCSys)
+	heapAlloc := float64(memStats.HeapAlloc)
+	heapIdle := float64(memStats.HeapIdle)
+	heapInuse := float64(memStats.HeapInuse)
+	heapObjects := float64(memStats.HeapObjects)
+	heapReleased := float64(memStats.HeapReleased)
+	heapSys := float64(memStats.HeapSys)
+	lastGC := float64(memStats.LastGC)
+	lookups := float64(memStats.Lookups)
+	mCacheInuse := float64(memStats.MCacheInuse)
+	mCacheSys := float64(memStats.MCacheSys)
+	mSpanInuse := float64(memStats.MSpanInuse)
+	mSpanSys := float64(memStats.MSpanSys)
+	mallocs := float64(memStats.Mallocs)
+	nextGC := float64(memStats.NextGC)
+	numForcedGC := float64(memStats.NumForcedGC)
+	numGC := float64(memStats.NumGC)
+	otherSys := float64(memStats.OtherSys)
+	pauseTotalNs := float64(memStats.PauseTotalNs)
+	stackInuse := float64(memStats.StackInuse)
+	stackSys := float64(memStats.StackSys)
+	sys := float64(memStats.Sys)
+	totalAlloc := float64(memStats.TotalAlloc)
+	randomValue := a.getRandomValue()
+
+	// Заполняем метрики, переиспользуя созданные структуры
+	// gauge метрики
+	gaugeMetrics := []struct {
+		name  string
+		value *float64
+	}{
+		{"Alloc", &alloc},
+		{"BuckHashSys", &buckHashSys},
+		{"Frees", &frees},
+		{"GCCPUFraction", &gcCPUFraction},
+		{"GCSys", &gcSys},
+		{"HeapAlloc", &heapAlloc},
+		{"HeapIdle", &heapIdle},
+		{"HeapInuse", &heapInuse},
+		{"HeapObjects", &heapObjects},
+		{"HeapReleased", &heapReleased},
+		{"HeapSys", &heapSys},
+		{"LastGC", &lastGC},
+		{"Lookups", &lookups},
+		{"MCacheInuse", &mCacheInuse},
+		{"MCacheSys", &mCacheSys},
+		{"MSpanInuse", &mSpanInuse},
+		{"MSpanSys", &mSpanSys},
+		{"Mallocs", &mallocs},
+		{"NextGC", &nextGC},
+		{"NumForcedGC", &numForcedGC},
+		{"NumGC", &numGC},
+		{"OtherSys", &otherSys},
+		{"PauseTotalNs", &pauseTotalNs},
+		{"StackInuse", &stackInuse},
+		{"StackSys", &stackSys},
+		{"Sys", &sys},
+		{"TotalAlloc", &totalAlloc},
+		{"RandomValue", &randomValue},
 	}
-	// Добавляем gauge метрики в батч
-	for name, value := range runtimeMetrics {
-		valueCopy := value
+
+	for _, gm := range gaugeMetrics {
 		metrics = append(metrics, models.Metrics{
-			ID:    name,
+			ID:    gm.name,
 			MType: "gauge",
-			Value: &valueCopy,
+			Value: gm.value,
 		})
 	}
-	// Добавляем counter метрику в батч
+
+	// counter метрика
 	metrics = append(metrics, models.Metrics{
 		ID:    "PollCount",
 		MType: "counter",
@@ -248,41 +342,46 @@ func (a *MetricsAgent) getRuntimeMetrics(pollCount int64) []models.Metrics {
 	return metrics
 }
 
-// getGopsutilMetrics возвращает системные метрики через gopsutil
+// getGopsutilMetrics возвращает системные метрики через gopsutil (оптимизированная версия)
 func (a *MetricsAgent) getGopsutilMetrics() []models.Metrics {
-	var metrics []models.Metrics
-	// TotalMemory
+	// Берем слайс из пула
+	metrics := metricsPool.Get().([]models.Metrics)
+	metrics = metrics[:0]
+
+	// TotalMemory и FreeMemory можно получить за один вызов
 	if vmStat, err := mem.VirtualMemory(); err == nil {
 		totalMem := float64(vmStat.Total)
-		metrics = append(metrics, models.Metrics{
-			ID:    "TotalMemory",
-			MType: "gauge",
-			Value: &totalMem,
-		})
-	} else {
-		logger.Log.Error("Failed to get TotalMemory", zap.Error(err))
-	}
-	// FreeMemory
-	if vmStat, err := mem.VirtualMemory(); err == nil {
 		freeMem := float64(vmStat.Free)
-		metrics = append(metrics, models.Metrics{
-			ID:    "FreeMemory",
-			MType: "gauge",
-			Value: &freeMem,
-		})
+
+		metrics = append(metrics,
+			models.Metrics{
+				ID:    "TotalMemory",
+				MType: "gauge",
+				Value: &totalMem,
+			},
+			models.Metrics{
+				ID:    "FreeMemory",
+				MType: "gauge",
+				Value: &freeMem,
+			},
+		)
 	} else {
-		logger.Log.Error("Failed to get FreeMemory", zap.Error(err))
+		logger.Log.Error("Failed to get memory stats", zap.Error(err))
 	}
-	// CPU utilization (по количеству CPU)
+
+	// CPU utilization
 	if cpuPercents, err := cpu.Percent(0, true); err == nil {
+		// Предварительно создаем слайс для CPU метрик
+		cpuMetrics := make([]models.Metrics, len(cpuPercents))
 		for i, percent := range cpuPercents {
 			cpuUtil := percent
-			metrics = append(metrics, models.Metrics{
+			cpuMetrics[i] = models.Metrics{
 				ID:    fmt.Sprintf("CPUutilization%d", i+1),
 				MType: "gauge",
 				Value: &cpuUtil,
-			})
+			}
 		}
+		metrics = append(metrics, cpuMetrics...)
 	} else {
 		logger.Log.Error("Failed to get CPU utilization", zap.Error(err))
 	}
@@ -292,5 +391,7 @@ func (a *MetricsAgent) getGopsutilMetrics() []models.Metrics {
 
 // getRandomValue возвращает случайное значение
 func (a *MetricsAgent) getRandomValue() float64 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	return float64(a.pollCount % 100)
 }

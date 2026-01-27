@@ -9,7 +9,25 @@ import (
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 )
 
-// HashValidation middleware проверяет хеш входящих запросов
+// HashValidation middleware проверяет хеш входящих запросов.
+// Используется для обеспечения целостности данных при передаче по сети.
+//
+// Алгоритм работы:
+//  1. Читает тело запроса и вычисляет HMAC-SHA256 хеш с использованием секретного ключа
+//  2. Сравнивает вычисленный хеш с хешем из заголовка "HashSHA256"
+//  3. Если хеши не совпадают, возвращает ошибку 400 Bad Request
+//
+// Если ключ не установлен (пустая строка), middleware пропускает проверку.
+//
+// Пример заголовка запроса:
+//
+//	HashSHA256: d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592
+//
+// Параметры:
+//   - key: секретный ключ для вычисления HMAC (если пустой - проверка отключается)
+//
+// Возвращает:
+//   - func(http.Handler) http.Handler: функция-обертка для добавления проверки хеша
 func HashValidation(key string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -43,7 +61,25 @@ func HashValidation(key string) func(http.Handler) http.Handler {
 	}
 }
 
-// HashResponse middleware добавляет хеш к исходящим ответам
+// HashResponse middleware добавляет хеш к исходящим ответам.
+// Вычисляет HMAC-SHA256 хеш тела ответа и добавляет его в заголовок "HashSHA256".
+//
+// Алгоритм работы:
+//  1. Перехватывает запись ответа с помощью hashResponseWriter
+//  2. Вычисляет хеш от тела ответа
+//  3. Добавляет хеш в заголовок перед отправкой клиенту
+//
+// Если ключ не установлен (пустая строка), middleware пропускает вычисление хеша.
+//
+// Пример заголовка ответа:
+//
+//	HashSHA256: d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592
+//
+// Параметры:
+//   - key: секретный ключ для вычисления HMAC (если пустой - вычисление отключается)
+//
+// Возвращает:
+//   - func(http.Handler) http.Handler: функция-обертка для добавления хеша к ответам
 func HashResponse(key string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -67,20 +103,30 @@ func HashResponse(key string) func(http.Handler) http.Handler {
 	}
 }
 
-// hashResponseWriter перехватывает запись ответа для вычисления хеша
+// hashResponseWriter перехватывает запись ответа для вычисления хеша.
+// Реализует интерфейс http.ResponseWriter с буферизацией данных.
+//
+// Используется в middleware HashResponse для перехвата тела ответа
+// перед вычислением HMAC-SHA256 хеша.
 type hashResponseWriter struct {
 	http.ResponseWriter
 	key    string
 	buffer bytes.Buffer
 }
 
+// Write перехватывает запись данных ответа.
+// Сохраняет данные в буфер для последующего вычисления хеша,
+// а также передает их в оригинальный ResponseWriter.
 func (hw *hashResponseWriter) Write(b []byte) (int, error) {
 	// Сохраняем данные для вычисления хеша
 	hw.buffer.Write(b)
 	return hw.ResponseWriter.Write(b)
 }
 
-// Важно: перехватываем WriteHeader чтобы успеть вычислить хеш до отправки заголовков
+// WriteHeader перехватывает отправку заголовков ответа.
+// Вычисляет хеш от буферизованных данных перед отправкой заголовков клиенту.
+// Важно: хеш должен быть вычислен до отправки заголовков, так как
+// заголовок HashSHA256 должен быть включен в HTTP ответ.
 func (hw *hashResponseWriter) WriteHeader(statusCode int) {
 	// Вычисляем хеш перед отправкой заголовков
 	if hw.buffer.Len() > 0 {

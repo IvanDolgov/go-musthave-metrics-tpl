@@ -1,3 +1,6 @@
+// Package agent предоставляет клиент для сбора и отправки метрик на сервер.
+// Агент собирает системные метрики (runtime, gopsutil) и отправляет их
+// на сервер с заданным интервалом. Поддерживает ограничение RPS и пул воркеров.
 package agent
 
 import (
@@ -15,7 +18,23 @@ import (
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 )
 
-// MetricsAgent собирает и отправляет метрики
+// MetricsAgent собирает и отправляет метрики на сервер.
+// Использует пул воркеров для ограничения RPS и пулы объектов для уменьшения аллокаций.
+//
+// Основные функции:
+//   - Сбор runtime метрик Go (использование памяти, GC, горутины)
+//   - Сбор системных метрик через gopsutil (CPU, память)
+//   - Отправка метрик на сервер с ограничением RPS
+//   - Поддержка graceful shutdown
+//
+// Пример использования:
+//
+//	cfg := models.Config{PollInterval: 2*time.Second, ReportInterval: 10*time.Second, RateLimit: 10}
+//	sender := NewHTTPSender("http://localhost:8080", "secret-key")
+//	agent := NewMetricsAgent(cfg, sender)
+//	agent.Start()
+//	// ... работа агента
+//	agent.Stop()
 type MetricsAgent struct {
 	cfg         models.Config
 	sender      MetricsSender
@@ -28,14 +47,26 @@ type MetricsAgent struct {
 	pollCount   int64
 }
 
-// Pools для уменьшения аллокаций
+// MetricsSender определяет интерфейс для отправки метрик на сервер.
+// Реализации могут использовать HTTP, gRPC или другие протоколы.
+type MetricsSender interface {
+	// SendMetricsBatch отправляет батч метрик на сервер.
+	// Возвращает ошибку если отправка не удалась.
+	SendMetricsBatch(ctx context.Context, metrics []models.Metrics) error
+}
+
+// Pools для уменьшения аллокаций памяти при частом создании слайсов метрик.
 var (
+	// metricsPool - пул для слайсов метрик произвольного размера.
+	// Используется для gopsutil метрик и других динамических коллекций.
 	metricsPool = sync.Pool{
 		New: func() interface{} {
 			return make([]models.Metrics, 0, 36) // предварительное выделение
 		},
 	}
 
+	// runtimeMetricsPool - пул для слайсов runtime метрик фиксированного размера.
+	// Содержит предварительно инициализированные структуры для 35 gauge + 1 counter метрик.
 	runtimeMetricsPool = sync.Pool{
 		New: func() interface{} {
 			// Слайс для runtime метрик (35 gauge + 1 counter)
@@ -49,7 +80,14 @@ var (
 	}
 )
 
-// NewMetricsAgent создает новый экземпляр агента
+// NewMetricsAgent создает новый экземпляр агента метрик.
+//
+// Параметры:
+//   - cfg: конфигурация агента (интервалы опроса, лимит RPS)
+//   - sender: реализация интерфейса MetricsSender для отправки метрик
+//
+// Возвращает:
+//   - *MetricsAgent: новый экземпляр агента, готовый к запуску
 func NewMetricsAgent(cfg models.Config, sender MetricsSender) *MetricsAgent {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -69,7 +107,14 @@ func NewMetricsAgent(cfg models.Config, sender MetricsSender) *MetricsAgent {
 	}
 }
 
-// Start запускает все горутины агента
+// Start запускает все горутины агента.
+// Запускает:
+//   - Воркеры для отправки метрик (количество = RateLimit)
+//   - Сборщик runtime метрик
+//   - Сборщик gopsutil метрик
+//
+// После вызова Start агент начинает собирать и отправлять метрики
+// с интервалами, указанными в конфигурации.
 func (a *MetricsAgent) Start() {
 	logger.Log.Info("Starting metrics agent",
 		zap.Int64("rate_limit", a.cfg.RateLimit),
@@ -94,7 +139,9 @@ func (a *MetricsAgent) Start() {
 	logger.Log.Info("All agent goroutines started")
 }
 
-// Stop останавливает агент
+// Stop останавливает агент корректно (graceful shutdown).
+// Останавливает все горутины, дожидается их завершения и закрывает каналы.
+// После вызова Stop агент больше не собирает и не отправляет метрики.
 func (a *MetricsAgent) Stop() {
 	logger.Log.Info("Stopping metrics agent")
 	a.cancel()
@@ -103,7 +150,16 @@ func (a *MetricsAgent) Stop() {
 	logger.Log.Info("Metrics agent stopped")
 }
 
-// worker обрабатывает метрики из канала с ограничением RPS
+// worker обрабатывает метрики из канала с ограничением RPS.
+// Каждый воркер:
+//  1. Ждет метрики из канала metricsChan
+//  2. Занимает слот в workerPool (ограничение RPS)
+//  3. Отправляет метрики через sender
+//  4. Освобождает слот в workerPool
+//  5. Возвращает метрики в пул для повторного использования
+//
+// Параметры:
+//   - id: уникальный идентификатор воркера для логирования
 func (a *MetricsAgent) worker(id int) {
 	defer a.wg.Done()
 
@@ -162,7 +218,9 @@ func (a *MetricsAgent) worker(id int) {
 	}
 }
 
-// collectRuntimeMetrics собирает runtime метрики
+// collectRuntimeMetrics собирает runtime метрики Go с заданным интервалом.
+// Собирает 35 gauge метрик (Alloc, BuckHashSys, Frees, и т.д.) и 1 counter метрику (PollCount).
+// Использует sync.Pool для уменьшения аллокаций памяти.
 func (a *MetricsAgent) collectRuntimeMetrics() {
 	defer a.wg.Done()
 
@@ -207,7 +265,11 @@ func (a *MetricsAgent) collectRuntimeMetrics() {
 	}
 }
 
-// collectGopsutilMetrics собирает системные метрики через gopsutil
+// collectGopsutilMetrics собирает системные метрики через gopsutil с заданным интервалом.
+// Собирает метрики:
+//   - TotalMemory: общий объем памяти системы
+//   - FreeMemory: свободная память
+//   - CPUutilization{1..N}: загрузка CPU по ядрам
 func (a *MetricsAgent) collectGopsutilMetrics() {
 	defer a.wg.Done()
 
@@ -246,7 +308,15 @@ func (a *MetricsAgent) collectGopsutilMetrics() {
 	}
 }
 
-// getRuntimeMetrics возвращает runtime метрики (оптимизированная версия)
+// getRuntimeMetrics возвращает runtime метрики Go (оптимизированная версия).
+// Собирает 35 gauge метрик из runtime.MemStats и 1 counter метрику (PollCount).
+// Использует предварительно вычисленные локальные переменные для уменьшения аллокаций.
+//
+// Параметры:
+//   - pollCount: текущее значение счетчика опросов
+//
+// Возвращает:
+//   - []models.Metrics: слайс с runtime метриками
 func (a *MetricsAgent) getRuntimeMetrics(pollCount int64) []models.Metrics {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
@@ -342,7 +412,12 @@ func (a *MetricsAgent) getRuntimeMetrics(pollCount int64) []models.Metrics {
 	return metrics
 }
 
-// getGopsutilMetrics возвращает системные метрики через gopsutil (оптимизированная версия)
+// getGopsutilMetrics возвращает системные метрики через gopsutil (оптимизированная версия).
+// Собирает метрики памяти и загрузки CPU.
+// Использует sync.Pool для уменьшения аллокаций памяти.
+//
+// Возвращает:
+//   - []models.Metrics: слайс с системными метриками
 func (a *MetricsAgent) getGopsutilMetrics() []models.Metrics {
 	// Берем слайс из пула
 	metrics := metricsPool.Get().([]models.Metrics)
@@ -389,7 +464,11 @@ func (a *MetricsAgent) getGopsutilMetrics() []models.Metrics {
 	return metrics
 }
 
-// getRandomValue возвращает случайное значение
+// getRandomValue возвращает псевдослучайное значение на основе счетчика опросов.
+// Используется для тестирования и демонстрации работы с gauge метриками.
+//
+// Возвращает:
+//   - float64: случайное значение в диапазоне 0-99
 func (a *MetricsAgent) getRandomValue() float64 {
 	a.mu.RLock()
 	defer a.mu.RUnlock()

@@ -1,3 +1,21 @@
+// Package main предоставляет HTTP-сервер для сбора и хранения метрик.
+// Сервер поддерживает различные типы метрик (gauge и counter), хранилища (память, файлы, PostgreSQL)
+// и дополнительные функции: сжатие данных, проверку хешей, логирование.
+//
+// Основные эндпоинты:
+//   - POST /update/{type}/{name}/{value} - обновление метрики через URL
+//   - POST /update/ - обновление метрики через JSON
+//   - GET /value/{type}/{name} - получение значения метрики
+//   - POST /value/ - получение метрики через JSON
+//   - GET / - просмотр всех метрик
+//   - POST /updates/ - батчевое обновление метрик
+//   - GET /ping - проверка доступности базы данных
+//
+// Пример использования:
+//
+//	Обновление gauge метрики: POST /update/gauge/cpu_usage/42.5
+//	Получение значения: GET /value/gauge/cpu_usage
+//	Батчевое обновление: POST /updates/ с JSON телом
 package main
 
 import (
@@ -18,7 +36,12 @@ import (
 	"go.uber.org/zap"
 )
 
-// checkConnectDatabase проверяет подключение к базе данных
+// checkConnectDatabase проверяет подключение к базе данных.
+// Используется для health-check эндпоинта /ping.
+//
+// Если база данных не настроена, возвращает сообщение об использовании in-memory хранилища.
+// При успешном подключении возвращает статус 200 OK.
+// При ошибке подключения возвращает 500 Internal Server Error.
 func checkConnectDatabase(dbStorage postgres.DatabaseStorage) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if dbStorage == nil {
@@ -41,7 +64,14 @@ func checkConnectDatabase(dbStorage postgres.DatabaseStorage) http.HandlerFunc {
 	}
 }
 
-// getMetricsWithSync возвращает обработчик с синхронным сохранением
+// getMetricsWithSync возвращает обработчик с синхронным сохранением метрик в файл после каждого обновления.
+// Используется для обеспечения сохранности данных при сбоях.
+//
+// Параметры:
+//   - store: хранилище метрик
+//   - filePath: путь к файлу для сохранения
+//
+// Возвращает обработчик HTTP, который после обновления метрик синхронно сохраняет их в файл.
 func getMetricsWithSync(store storage.Storage, filePath string) http.HandlerFunc {
 	handler := getMetrics(store)
 	return func(w http.ResponseWriter, req *http.Request) {
@@ -54,7 +84,14 @@ func getMetricsWithSync(store storage.Storage, filePath string) http.HandlerFunc
 	}
 }
 
-// getJSONMetricWithSync возвращает обработчик с синхронным сохранением
+// getJSONMetricWithSync возвращает обработчик с синхронным сохранением метрик в файл после обновления через JSON.
+// Аналогично getMetricsWithSync, но для JSON API.
+//
+// Параметры:
+//   - store: хранилище метрик
+//   - filePath: путь к файлу для сохранения
+//
+// Возвращает обработчик HTTP для обновления метрик через JSON с последующим сохранением.
 func getJSONMetricWithSync(store storage.Storage, filePath string) http.HandlerFunc {
 	handler := getJSONMetric(store)
 	return func(w http.ResponseWriter, req *http.Request) {
@@ -67,6 +104,16 @@ func getJSONMetricWithSync(store storage.Storage, filePath string) http.HandlerF
 	}
 }
 
+// sendMetrics обрабатывает GET запросы для получения значения метрики по имени и типу.
+// Поддерживает два формата вывода: целые числа для counter и числа с плавающей точкой для gauge.
+//
+// Примеры запросов:
+//   - GET /value/gauge/cpu_usage
+//   - GET /value/counter/requests
+//
+// Возвращает:
+//   - 200 OK с значением метрики в теле ответа
+//   - 404 Not Found если метрика не найдена
 func sendMetrics(store storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		ctx := req.Context()
@@ -94,6 +141,18 @@ func sendMetrics(store storage.Storage) http.HandlerFunc {
 	}
 }
 
+// summaryMetrics возвращает HTML-страницу со всеми метриками из хранилища.
+// Используется для отладки и мониторинга состояния сервера.
+//
+// Формат вывода:
+//
+//	Gauge Metrics:
+//	cpu_usage: 42.5
+//	memory_usage: 75.3
+//
+//	Counter Metrics:
+//	requests: 100
+//	errors: 5
 func summaryMetrics(store storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		ctx := req.Context()
@@ -119,6 +178,18 @@ func summaryMetrics(store storage.Storage) http.HandlerFunc {
 	}
 }
 
+// getMetrics обрабатывает POST запросы для обновления метрик через URL параметры.
+// Поддерживает обновление gauge и counter метрик.
+//
+// Формат запроса: POST /update/{type}/{name}/{value}
+// Примеры:
+//   - POST /update/gauge/cpu_usage/42.5
+//   - POST /update/counter/requests/10
+//
+// Возвращает:
+//   - 200 OK при успешном обновлении
+//   - 400 Bad Request при неверных параметрах
+//   - 405 Method Not Allowed при использовании не POST метода
 func getMetrics(store storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		ctx := req.Context()
@@ -163,6 +234,21 @@ func getMetrics(store storage.Storage) http.HandlerFunc {
 	}
 }
 
+// getJSONMetric обрабатывает POST запросы для обновления метрик через JSON.
+// Принимает метрику в формате JSON, обновляет её в хранилище и возвращает обновленную метрику.
+//
+// Пример тела запроса:
+//
+//	{
+//	  "id": "cpu_usage",
+//	  "type": "gauge",
+//	  "value": 42.5
+//	}
+//
+// Возвращает:
+//   - 200 OK с обновленной метрикой в формате JSON
+//   - 400 Bad Request при неверном JSON или отсутствии обязательных полей
+//   - 405 Method Not Allowed при использовании не POST метода
 func getJSONMetric(store storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		ctx := req.Context()
@@ -217,6 +303,29 @@ func getJSONMetric(store storage.Storage) http.HandlerFunc {
 	}
 }
 
+// sendJSONMetric обрабатывает POST запросы для получения метрик через JSON.
+// Принимает метрику с указанием имени и типа, возвращает её значение.
+//
+// Пример тела запроса:
+//
+//	{
+//	  "id": "cpu_usage",
+//	  "type": "gauge"
+//	}
+//
+// Пример ответа:
+//
+//	{
+//	  "id": "cpu_usage",
+//	  "type": "gauge",
+//	  "value": 42.5
+//	}
+//
+// Возвращает:
+//   - 200 OK с метрикой в формате JSON
+//   - 404 Not Found если метрика не найдена
+//   - 400 Bad Request при неверном JSON
+//   - 405 Method Not Allowed при использовании не POST метода
 func sendJSONMetric(store storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		ctx := req.Context()
@@ -256,7 +365,22 @@ func sendJSONMetric(store storage.Storage) http.HandlerFunc {
 	}
 }
 
-// updateMetricsBatch обрабатывает батчевое обновление метрик
+// updateMetricsBatch обрабатывает батчевое обновление метрик через JSON.
+// Принимает массив метрик и обновляет их все за одну транзакцию.
+//
+// Пример тела запроса:
+//
+//	[
+//	  {"id": "cpu_usage", "type": "gauge", "value": 42.5},
+//	  {"id": "requests", "type": "counter", "delta": 10},
+//	  {"id": "memory_usage", "type": "gauge", "value": 75.3}
+//	]
+//
+// Возвращает:
+//   - 200 OK с {"status": "ok"} при успешном обновлении
+//   - 400 Bad Request при пустом массиве или неверном JSON
+//   - 405 Method Not Allowed при использовании не POST метода
+//   - 500 Internal Server Error при ошибке обновления в хранилище
 func updateMetricsBatch(store storage.Storage) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		ctx := req.Context()

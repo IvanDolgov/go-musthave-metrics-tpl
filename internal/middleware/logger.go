@@ -1,3 +1,5 @@
+// Package middleware предоставляет HTTP middleware компоненты для сервера метрик.
+// Включает middleware для логирования, сжатия данных, проверки хешей и других функций.
 package middleware
 
 import (
@@ -8,7 +10,21 @@ import (
 	"go.uber.org/zap"
 )
 
-// WithLogging добавляет логирование для всех запросов и ответов
+// WithLogging добавляет логирование для всех HTTP запросов и ответов.
+// Регистрирует информацию о каждом запросе: URI, метод, IP адрес клиента,
+// статус код ответа, размер ответа и время выполнения.
+//
+// Пример лога:
+//
+//	HTTP request processed {"uri": "/update/gauge/cpu_usage/42.5", "method": "POST",
+//	"remote_addr": "192.168.1.1:12345", "status_code": 200, "response_size": 45,
+//	"duration": "12.345ms"}
+//
+// Параметры:
+//   - h: следующий обработчик в цепочке middleware
+//
+// Возвращает:
+//   - http.Handler: обработчик с добавленным логированием
 func WithLogging(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// засекаем время начала обработки запроса
@@ -38,8 +54,12 @@ func WithLogging(h http.Handler) http.Handler {
 	})
 }
 
-// loggingResponseWriter обертка для http.ResponseWriter для перехвата статуса и размера ответа
-// Используется для логирования
+// loggingResponseWriter - обертка для http.ResponseWriter для перехвата статуса и размера ответа.
+// Используется в middleware WithLogging для сбора метрик о HTTP ответах.
+//
+// Реализует интерфейс http.ResponseWriter с дополнительными методами:
+//   - Status(): возвращает статус код ответа
+//   - Size(): возвращает размер тела ответа в байтах
 type loggingResponseWriter struct {
 	http.ResponseWriter
 	statusCode   int
@@ -47,6 +67,8 @@ type loggingResponseWriter struct {
 	wroteHeader  bool
 }
 
+// WriteHeader перехватывает вызов WriteHeader для записи статус кода.
+// Гарантирует, что статус код записывается только один раз.
 func (rw *loggingResponseWriter) WriteHeader(code int) {
 	if !rw.wroteHeader {
 		rw.statusCode = code
@@ -55,6 +77,8 @@ func (rw *loggingResponseWriter) WriteHeader(code int) {
 	}
 }
 
+// Write перехватывает запись данных для подсчета размера ответа.
+// Гарантирует, что заголовки отправляются перед телом ответа.
 func (rw *loggingResponseWriter) Write(b []byte) (int, error) {
 	if !rw.wroteHeader {
 		rw.WriteHeader(http.StatusOK)
@@ -64,12 +88,14 @@ func (rw *loggingResponseWriter) Write(b []byte) (int, error) {
 	return size, err
 }
 
-// Status возвращает статус код ответа
+// Status возвращает статус код ответа.
+// Используется для логирования после обработки запроса.
 func (rw *loggingResponseWriter) Status() int {
 	return rw.statusCode
 }
 
-// Size возвращает размер ответа
+// Size возвращает размер ответа в байтах.
+// Используется для логирования после обработки запроса.
 func (rw *loggingResponseWriter) Size() int {
 	return rw.responseSize
 }

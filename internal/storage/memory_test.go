@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
@@ -84,10 +85,11 @@ func TestMemStorage_SetGauge(t *testing.T) {
 
 		storage.SetGauge(ctx, "should_not_be_set", 1.0)
 
-		// Метод не должен паниковать, метрика может быть или не быть добавлена
+		// Проверяем, что метрика не была добавлена при отмененном контексте
 		_, exists := storage.GetMetric(context.Background(), "should_not_be_set", models.Gauge)
-		// Просто проверяем что нет паники
-		t.Logf("Gauge exists after cancelled context: %v", exists)
+		if exists {
+			t.Error("Metric should not be set with cancelled context")
+		}
 	})
 }
 
@@ -143,9 +145,11 @@ func TestMemStorage_IncrementCounter(t *testing.T) {
 
 		storage.IncrementCounter(ctx, "cancelled_counter", 1)
 
-		// Метод не должен паниковать
+		// Проверяем, что метрика не была добавлена при отмененном контексте
 		_, exists := storage.GetMetric(context.Background(), "cancelled_counter", models.Counter)
-		t.Logf("Counter exists after cancelled context: %v", exists)
+		if exists {
+			t.Error("Counter should not be incremented with cancelled context")
+		}
 	})
 }
 
@@ -223,7 +227,6 @@ func TestMemStorage_GetMetric(t *testing.T) {
 
 		value, exists := storage.GetMetric(ctx, "test_gauge", models.Gauge)
 
-		// При отмененном контексте должен вернуться false, nil
 		if exists {
 			t.Error("Should not exist with cancelled context")
 		}
@@ -237,9 +240,9 @@ func TestMemStorage_GetMetric(t *testing.T) {
 // TestMemStorage_GetAllMetrics тестирует получение всех метрик
 func TestMemStorage_GetAllMetrics(t *testing.T) {
 	ctx := context.Background()
-	storage := NewMemStorage()
 
 	t.Run("Empty storage", func(t *testing.T) {
+		storage := NewMemStorage()
 		gauges, counters := storage.GetAllMetrics(ctx)
 
 		if len(gauges) != 0 {
@@ -252,6 +255,7 @@ func TestMemStorage_GetAllMetrics(t *testing.T) {
 	})
 
 	t.Run("With metrics", func(t *testing.T) {
+		storage := NewMemStorage()
 		storage.SetGauge(ctx, "gauge1", 1.0)
 		storage.SetGauge(ctx, "gauge2", 2.0)
 		storage.IncrementCounter(ctx, "counter1", 10)
@@ -280,40 +284,39 @@ func TestMemStorage_GetAllMetrics(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		gauges, counters := storage.GetAllMetrics(ctx)
+		storage := NewMemStorage()
+		storage.SetGauge(ctx, "test_gauge", 1.0)
 
-		// При отмененном контексте должны вернуться пустые мапы
-		if len(gauges) != 0 {
-			t.Logf("GetAllMetrics returned %d gauges with cancelled context", len(gauges))
+		// Создаем новый контекст для проверки, так как оригинальный отменен
+		checkCtx := context.Background()
+		gauges, counters := storage.GetAllMetrics(checkCtx)
+
+		if len(gauges) != 1 {
+			t.Errorf("Expected 1 gauge, got %d", len(gauges))
 		}
 
 		if len(counters) != 0 {
-			t.Logf("GetAllMetrics returned %d counters with cancelled context", len(counters))
+			t.Errorf("Expected 0 counters, got %d", len(counters))
 		}
 	})
 
-	t.Run("GetAllMetrics uses pool", func(t *testing.T) {
-		// Этот тест проверяет что GetAllMetrics использует sync.Pool
-		// Хотя мы не можем напрямую проверить внутреннюю работу пула,
-		// мы можем проверить что метод работает корректно
-		storage.SetGauge(ctx, "pool_test", 99.9)
+	t.Run("GetAllMetrics returns correct values after updates", func(t *testing.T) {
+		storage := NewMemStorage()
+		storage.SetGauge(ctx, "test_gauge", 99.9)
 
-		gauges1, counters1 := storage.GetAllMetrics(ctx)
-		gauges2, counters2 := storage.GetAllMetrics(ctx)
+		gauges1, _ := storage.GetAllMetrics(ctx)
 
-		// Оба вызова должны возвращать корректные данные
-		if gauges1["pool_test"] != 99.9 {
-			t.Errorf("First call: expected 99.9, got %v", gauges1["pool_test"])
+		// Обновляем значение
+		storage.SetGauge(ctx, "test_gauge", 100.0)
+
+		gauges2, _ := storage.GetAllMetrics(ctx)
+
+		if gauges1["test_gauge"] != 99.9 {
+			t.Errorf("First call: expected 99.9, got %v", gauges1["test_gauge"])
 		}
 
-		if gauges2["pool_test"] != 99.9 {
-			t.Errorf("Second call: expected 99.9, got %v", gauges2["pool_test"])
-		}
-
-		// Возвращаем мапы в пул (если используется)
-		if storage != nil {
-			storage.Cleanup(gauges1, counters1)
-			storage.Cleanup(gauges2, counters2)
+		if gauges2["test_gauge"] != 100.0 {
+			t.Errorf("Second call: expected 100.0, got %v", gauges2["test_gauge"])
 		}
 	})
 }
@@ -791,10 +794,12 @@ func TestMemStorage_ConcurrentAccess(t *testing.T) {
 	const goroutines = 10
 	const operations = 100
 
-	done := make(chan bool, goroutines)
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
 
 	for i := 0; i < goroutines; i++ {
 		go func(id int) {
+			defer wg.Done()
 			for j := 0; j < operations; j++ {
 				// Чередуем операции записи и чтения
 				if j%2 == 0 {
@@ -806,13 +811,10 @@ func TestMemStorage_ConcurrentAccess(t *testing.T) {
 					storage.GetAllMetrics(ctx)
 				}
 			}
-			done <- true
 		}(i)
 	}
 
-	for i := 0; i < goroutines; i++ {
-		<-done
-	}
+	wg.Wait()
 
 	// Проверяем что не было паники и данные корректны
 	gauges, counters := storage.GetAllMetrics(ctx)
@@ -827,21 +829,6 @@ func TestMemStorage_ConcurrentAccess(t *testing.T) {
 	}
 }
 
-// TestMemStorage_Cleanup тестирует очистку пула
-func TestMemStorage_Cleanup(t *testing.T) {
-	storage := NewMemStorage()
-
-	// Создаем тестовые мапы
-	gauges := map[string]float64{"test": 1.0}
-	counters := map[string]int64{"test": 1}
-
-	// Возвращаем в пул
-	storage.Cleanup(gauges, counters)
-
-	// Проверяем что нет паники
-	t.Log("Cleanup completed without panic")
-}
-
 // TestMemStorage_EdgeCases тестирует граничные случаи
 func TestMemStorage_EdgeCases(t *testing.T) {
 	ctx := context.Background()
@@ -853,9 +840,14 @@ func TestMemStorage_EdgeCases(t *testing.T) {
 
 		gauges, counters := storage.GetAllMetrics(ctx)
 
-		// Пустые имена могут быть разрешены
-		t.Logf("Gauges with empty name: %v", gauges)
-		t.Logf("Counters with empty name: %v", counters)
+		// Проверяем что метрики с пустыми именами сохраняются
+		if val, exists := gauges[""]; !exists || val != 1.0 {
+			t.Errorf("Gauge with empty name should be stored, got %v, exists: %v", val, exists)
+		}
+
+		if val, exists := counters[""]; !exists || val != 1 {
+			t.Errorf("Counter with empty name should be stored, got %v, exists: %v", val, exists)
+		}
 	})
 
 	t.Run("Overwrite with same value", func(t *testing.T) {

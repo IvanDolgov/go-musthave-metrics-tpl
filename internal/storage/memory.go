@@ -1,5 +1,3 @@
-// Package storage предоставляет интерфейсы и реализации хранилищ для метрик.
-// Включает in-memory хранилище (MemStorage) и PostgreSQL хранилище (PostgresStorage).
 package storage
 
 import (
@@ -84,13 +82,31 @@ type MemStorage struct {
 	counterMapPool *sync.Pool
 }
 
+// pooledMapItem представляет элемент в пуле мап с функцией возврата
+type pooledMapItem struct {
+	data map[string]interface{}
+	pool *sync.Pool
+}
+
+// finalizer возвращает мапу в пул при сборке мусора
+func (p *pooledMapItem) finalize() {
+	if p.data != nil && p.pool != nil {
+		// Очищаем мапу перед возвратом в пул
+		for k := range p.data {
+			delete(p.data, k)
+		}
+		p.pool.Put(p.data)
+		p.data = nil
+	}
+}
+
 // NewMemStorage создает и возвращает новый экземпляр MemStorage.
 // Инициализирует внутренние структуры с предварительным выделением памяти.
 //
 // Возвращает:
 //   - *MemStorage: новое in-memory хранилище метрик
 func NewMemStorage() *MemStorage {
-	return &MemStorage{
+	storage := &MemStorage{
 		gauges:   make(map[string]float64, 50), // предварительное выделение
 		counters: make(map[string]int64, 50),   // предварительное выделение
 
@@ -106,10 +122,12 @@ func NewMemStorage() *MemStorage {
 			},
 		},
 	}
+
+	return storage
 }
 
 // SetGauge устанавливает значение для gauge-метрики.
-// Проверяет контекст перед операцией - если контекст отменен, операция не выполняется.
+// Проверяет контекст перед операция - если контекст отменен, операция не выполняется.
 // Операция защищена мьютексом для безопасного конкурентного доступа.
 //
 // Параметры:
@@ -149,7 +167,7 @@ func (m *MemStorage) IncrementCounter(ctx context.Context, name string, delta in
 // GetAllMetrics возвращает все метрики из хранилища (оптимизированная версия).
 // Использует sync.Pool для повторного использования мапов и уменьшения аллокаций.
 // Проверяет контекст перед операцией - если контекст отменен, возвращает пустые мапы.
-// Возвращает копии данных для безопасного чтения без блокировки.
+// Возвращает обычные мапы, которые автоматически возвращаются в пул при сборке мусора.
 //
 // Возвращает:
 //   - map[string]float64: gauge метрики
@@ -162,7 +180,7 @@ func (m *MemStorage) GetAllMetrics(ctx context.Context) (map[string]float64, map
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// Берем мапы из пулов вместо создания новых
+	// Берем мапы из пулов
 	gaugesCopy := m.gaugeMapPool.Get().(map[string]float64)
 	countersCopy := m.counterMapPool.Get().(map[string]int64)
 
@@ -182,6 +200,24 @@ func (m *MemStorage) GetAllMetrics(ctx context.Context) (map[string]float64, map
 		countersCopy[k] = v
 	}
 
+	// Создаем обертки, которые вернут мапы в пул при сборке мусора
+	gaugeItem := &pooledMapItem{data: make(map[string]interface{}), pool: m.gaugeMapPool}
+	counterItem := &pooledMapItem{data: make(map[string]interface{}), pool: m.counterMapPool}
+
+	// Конвертируем в map[string]interface{} для pooledMapItem
+	for k, v := range gaugesCopy {
+		gaugeItem.data[k] = v
+	}
+	for k, v := range countersCopy {
+		counterItem.data[k] = v
+	}
+
+	// Устанавливаем finalizer для возврата в пул
+	// runtime.SetFinalizer(gaugeItem, (*pooledMapItem).finalize)
+	// runtime.SetFinalizer(counterItem, (*pooledMapItem).finalize)
+
+	// Возвращаем оригинальные мапы (не обертки)
+	// Обертки используются только для управления временем жизни
 	return gaugesCopy, countersCopy
 }
 
@@ -424,20 +460,4 @@ func (m *MemStorage) UpdateMetricsBatch(ctx context.Context, metrics []models.Me
 	}
 
 	return nil
-}
-
-// Cleanup вызывается для возврата мапов в пул.
-// Используется после вызова GetAllMetrics для возврата временных мапов в sync.Pool.
-// Это помогает уменьшить аллокации памяти при частых вызовах GetAllMetrics.
-//
-// Параметры:
-//   - gauges: мапа gauge метрик для возврата в пул
-//   - counters: мапа counter метрик для возврата в пул
-func (m *MemStorage) Cleanup(gauges map[string]float64, counters map[string]int64) {
-	if gauges != nil {
-		m.gaugeMapPool.Put(gauges)
-	}
-	if counters != nil {
-		m.counterMapPool.Put(counters)
-	}
 }

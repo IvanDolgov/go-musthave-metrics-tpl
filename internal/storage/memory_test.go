@@ -27,14 +27,6 @@ func TestNewMemStorage(t *testing.T) {
 		t.Error("counters map should be initialized")
 	}
 
-	if storage.gaugeMapPool == nil {
-		t.Error("gaugeMapPool should be initialized")
-	}
-
-	if storage.counterMapPool == nil {
-		t.Error("counterMapPool should be initialized")
-	}
-
 	// Проверяем что хранилище пустое
 	ctx := context.Background()
 	gauges, counters := storage.GetAllMetrics(ctx)

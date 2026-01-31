@@ -64,7 +64,6 @@ type Storage interface {
 
 // MemStorage - хранилище для метрик в памяти.
 // Использует sync.RWMutex для безопасного конкурентного доступа.
-// Оптимизировано с помощью sync.Pool для уменьшения аллокаций памяти.
 //
 // Пример использования:
 //
@@ -76,28 +75,6 @@ type MemStorage struct {
 	gauges   map[string]float64
 	counters map[string]int64
 	mu       sync.RWMutex
-
-	// Pools для уменьшения аллокаций
-	gaugeMapPool   *sync.Pool
-	counterMapPool *sync.Pool
-}
-
-// pooledMapItem представляет элемент в пуле мап с функцией возврата
-type pooledMapItem struct {
-	data map[string]interface{}
-	pool *sync.Pool
-}
-
-// finalizer возвращает мапу в пул при сборке мусора
-func (p *pooledMapItem) finalize() {
-	if p.data != nil && p.pool != nil {
-		// Очищаем мапу перед возвратом в пул
-		for k := range p.data {
-			delete(p.data, k)
-		}
-		p.pool.Put(p.data)
-		p.data = nil
-	}
 }
 
 // NewMemStorage создает и возвращает новый экземпляр MemStorage.
@@ -106,24 +83,10 @@ func (p *pooledMapItem) finalize() {
 // Возвращает:
 //   - *MemStorage: новое in-memory хранилище метрик
 func NewMemStorage() *MemStorage {
-	storage := &MemStorage{
+	return &MemStorage{
 		gauges:   make(map[string]float64, 50), // предварительное выделение
 		counters: make(map[string]int64, 50),   // предварительное выделение
-
-		gaugeMapPool: &sync.Pool{
-			New: func() interface{} {
-				return make(map[string]float64, 50)
-			},
-		},
-
-		counterMapPool: &sync.Pool{
-			New: func() interface{} {
-				return make(map[string]int64, 50)
-			},
-		},
 	}
-
-	return storage
 }
 
 // SetGauge устанавливает значение для gauge-метрики.
@@ -164,10 +127,8 @@ func (m *MemStorage) IncrementCounter(ctx context.Context, name string, delta in
 	m.counters[name] += delta
 }
 
-// GetAllMetrics возвращает все метрики из хранилища (оптимизированная версия).
-// Использует sync.Pool для повторного использования мапов и уменьшения аллокаций.
+// GetAllMetrics возвращает все метрики из хранилища.
 // Проверяет контекст перед операцией - если контекст отменен, возвращает пустые мапы.
-// Возвращает обычные мапы, которые автоматически возвращаются в пул при сборке мусора.
 //
 // Возвращает:
 //   - map[string]float64: gauge метрики
@@ -180,19 +141,10 @@ func (m *MemStorage) GetAllMetrics(ctx context.Context) (map[string]float64, map
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// Берем мапы из пулов
-	gaugesCopy := m.gaugeMapPool.Get().(map[string]float64)
-	countersCopy := m.counterMapPool.Get().(map[string]int64)
+	// Создаем копии мапов
+	gaugesCopy := make(map[string]float64, len(m.gauges))
+	countersCopy := make(map[string]int64, len(m.counters))
 
-	// Очищаем мапы перед использованием
-	for k := range gaugesCopy {
-		delete(gaugesCopy, k)
-	}
-	for k := range countersCopy {
-		delete(countersCopy, k)
-	}
-
-	// Копируем данные
 	for k, v := range m.gauges {
 		gaugesCopy[k] = v
 	}
@@ -200,24 +152,6 @@ func (m *MemStorage) GetAllMetrics(ctx context.Context) (map[string]float64, map
 		countersCopy[k] = v
 	}
 
-	// Создаем обертки, которые вернут мапы в пул при сборке мусора
-	gaugeItem := &pooledMapItem{data: make(map[string]interface{}), pool: m.gaugeMapPool}
-	counterItem := &pooledMapItem{data: make(map[string]interface{}), pool: m.counterMapPool}
-
-	// Конвертируем в map[string]interface{} для pooledMapItem
-	for k, v := range gaugesCopy {
-		gaugeItem.data[k] = v
-	}
-	for k, v := range countersCopy {
-		counterItem.data[k] = v
-	}
-
-	// Устанавливаем finalizer для возврата в пул
-	// runtime.SetFinalizer(gaugeItem, (*pooledMapItem).finalize)
-	// runtime.SetFinalizer(counterItem, (*pooledMapItem).finalize)
-
-	// Возвращаем оригинальные мапы (не обертки)
-	// Обертки используются только для управления временем жизни
 	return gaugesCopy, countersCopy
 }
 
@@ -259,8 +193,7 @@ func (m *MemStorage) GetMetric(ctx context.Context, name string, metricType mode
 	}
 }
 
-// GetMetricForJSON возвращает метрику в формате для JSON (оптимизированная версия).
-// Использует sync.Pool для временных переменных.
+// GetMetricForJSON возвращает метрику в формате для JSON.
 // Проверяет контекст перед операцией - если контекст отменен, возвращает пустую структуру.
 // Для gauge метрик заполняет поле Value, для counter - поле Delta.
 //
@@ -279,7 +212,6 @@ func (m *MemStorage) GetMetricForJSON(ctx context.Context, name string, metricTy
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// Используем пул для временных переменных
 	switch metricType {
 	case models.Gauge:
 		if value, exists := m.gauges[name]; exists {
@@ -304,7 +236,7 @@ func (m *MemStorage) GetMetricForJSON(ctx context.Context, name string, metricTy
 	return models.Metrics{}
 }
 
-// SaveToFile сохраняет все метрики в файл в формате JSON (оптимизированная версия).
+// SaveToFile сохраняет все метрики в файл в формате JSON.
 // Предварительно выделяет слайс с нужной capacity для уменьшения аллокаций.
 // Использует Marshal вместо MarshalIndent для производительности.
 // Записывает с буферизацией через os.WriteFile.
@@ -327,7 +259,6 @@ func (m *MemStorage) SaveToFile(ctx context.Context, filename string) error {
 	totalMetrics := len(m.gauges) + len(m.counters)
 	metrics := make([]models.FileMetric, 0, totalMetrics)
 
-	// Пул для временных переменных
 	for name, value := range m.gauges {
 		v := value
 		metrics = append(metrics, models.FileMetric{
@@ -409,7 +340,7 @@ func (m *MemStorage) LoadFromFile(ctx context.Context, filename string) error {
 	return nil
 }
 
-// UpdateMetricsBatch обновляет метрики батчем (оптимизированная версия).
+// UpdateMetricsBatch обновляет метрики батчем.
 // Предварительно проверяет capacity мапов и увеличивает если нужно.
 // Для gauge метрик значения заменяются, для counter - добавляются.
 // Игнорирует метрики с nil значениями.
@@ -427,24 +358,6 @@ func (m *MemStorage) UpdateMetricsBatch(ctx context.Context, metrics []models.Me
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	// Предварительно проверяем capacity мапов
-	if len(m.gauges) < len(metrics) {
-		// Увеличиваем capacity если нужно
-		newGauges := make(map[string]float64, len(m.gauges)+len(metrics))
-		for k, v := range m.gauges {
-			newGauges[k] = v
-		}
-		m.gauges = newGauges
-	}
-
-	if len(m.counters) < len(metrics) {
-		newCounters := make(map[string]int64, len(m.counters)+len(metrics))
-		for k, v := range m.counters {
-			newCounters[k] = v
-		}
-		m.counters = newCounters
-	}
 
 	for _, metric := range metrics {
 		switch metric.MType {

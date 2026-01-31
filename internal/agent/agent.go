@@ -308,15 +308,13 @@ func (a *MetricsAgent) collectGopsutilMetrics() {
 	}
 }
 
-// getRuntimeMetrics возвращает runtime метрики Go (оптимизированная версия).
-// Собирает 35 gauge метрик из runtime.MemStats и 1 counter метрику (PollCount).
-// Использует предварительно вычисленные локальные переменные для уменьшения аллокаций.
-//
-// Параметры:
-//   - pollCount: текущее значение счетчика опросов
-//
-// Возвращает:
-//   - []models.Metrics: слайс с runtime метриками
+// gaugeValue представляет пару имя-значение для gauge метрики
+type gaugeValue struct {
+	name  string
+	value *float64
+}
+
+// getRuntimeMetrics возвращает runtime метрики Go (оптимизированная версия)
 func (a *MetricsAgent) getRuntimeMetrics(pollCount int64) []models.Metrics {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
@@ -327,6 +325,38 @@ func (a *MetricsAgent) getRuntimeMetrics(pollCount int64) []models.Metrics {
 	// Восстанавливаем length до 0, но сохраняем capacity
 	metrics = metrics[:0]
 
+	// Собираем gauge метрики
+	metrics = a.collectGaugeMetrics(memStats, metrics)
+
+	// Добавляем counter метрику
+	metrics = a.addCounterMetric(pollCount, metrics)
+
+	return metrics
+}
+
+// collectGaugeMetrics собирает все gauge метрики из runtime.MemStats
+func (a *MetricsAgent) collectGaugeMetrics(memStats runtime.MemStats, metrics []models.Metrics) []models.Metrics {
+	// Извлекаем значения gauge метрик
+	gaugeValues := a.extractGaugeValues(memStats)
+
+	// Добавляем random value
+	randomValue := a.getRandomValue()
+	gaugeValues = append(gaugeValues, gaugeValue{"RandomValue", &randomValue})
+
+	// Создаем метрики из значений
+	for _, gv := range gaugeValues {
+		metrics = append(metrics, models.Metrics{
+			ID:    gv.name,
+			MType: "gauge",
+			Value: gv.value,
+		})
+	}
+
+	return metrics
+}
+
+// extractGaugeValues извлекает значения gauge метрик из runtime.MemStats
+func (a *MetricsAgent) extractGaugeValues(memStats runtime.MemStats) []gaugeValue {
 	// Предварительно вычисляем все значения
 	// Используем локальные переменные чтобы уменьшить аллокации
 	alloc := float64(memStats.Alloc)
@@ -356,14 +386,8 @@ func (a *MetricsAgent) getRuntimeMetrics(pollCount int64) []models.Metrics {
 	stackSys := float64(memStats.StackSys)
 	sys := float64(memStats.Sys)
 	totalAlloc := float64(memStats.TotalAlloc)
-	randomValue := a.getRandomValue()
 
-	// Заполняем метрики, переиспользуя созданные структуры
-	// gauge метрики
-	gaugeMetrics := []struct {
-		name  string
-		value *float64
-	}{
+	return []gaugeValue{
 		{"Alloc", &alloc},
 		{"BuckHashSys", &buckHashSys},
 		{"Frees", &frees},
@@ -391,25 +415,16 @@ func (a *MetricsAgent) getRuntimeMetrics(pollCount int64) []models.Metrics {
 		{"StackSys", &stackSys},
 		{"Sys", &sys},
 		{"TotalAlloc", &totalAlloc},
-		{"RandomValue", &randomValue},
 	}
+}
 
-	for _, gm := range gaugeMetrics {
-		metrics = append(metrics, models.Metrics{
-			ID:    gm.name,
-			MType: "gauge",
-			Value: gm.value,
-		})
-	}
-
-	// counter метрика
-	metrics = append(metrics, models.Metrics{
+// addCounterMetric добавляет counter метрику PollCount
+func (a *MetricsAgent) addCounterMetric(pollCount int64, metrics []models.Metrics) []models.Metrics {
+	return append(metrics, models.Metrics{
 		ID:    "PollCount",
 		MType: "counter",
 		Delta: &pollCount,
 	})
-
-	return metrics
 }
 
 // getGopsutilMetrics возвращает системные метрики через gopsutil (оптимизированная версия).

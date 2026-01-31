@@ -1,11 +1,15 @@
 package middleware
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/audit"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 )
@@ -29,10 +33,44 @@ func getClientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
+// bufferedRequest хранит буферизованный запрос
+type bufferedRequest struct {
+	*http.Request
+	bodyBuffer *bytes.Buffer
+}
+
 // WithAudit middleware для аудита запросов
 func WithAudit(auditSubject audit.Subject) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Буферизуем тело только для POST запросов на обновление метрик
+			var bufferedReq *bufferedRequest
+			if r.Method == http.MethodPost &&
+				(strings.HasPrefix(r.URL.Path, "/update") || r.URL.Path == "/updates") {
+
+				// Копируем тело запроса в буфер
+				bodyBytes, err := io.ReadAll(r.Body)
+				if err != nil {
+					logger.Log.Error("Failed to read request body", zap.Error(err))
+					http.Error(w, "Internal server error", http.StatusInternalServerError)
+					return
+				}
+
+				// Закрываем оригинальное тело
+				r.Body.Close()
+
+				// Создаем новый буфер и заменяем тело запроса
+				bodyBuffer := bytes.NewBuffer(bodyBytes)
+				bufferedReq = &bufferedRequest{
+					Request:    r,
+					bodyBuffer: bodyBuffer,
+				}
+				bufferedReq.Body = io.NopCloser(bodyBuffer)
+
+				// Используем буферизованный запрос
+				r = bufferedReq.Request
+			}
+
 			// Создаем кастомный ResponseWriter для перехвата статуса
 			wrapped := &auditResponseWriter{
 				ResponseWriter: w,
@@ -50,7 +88,7 @@ func WithAudit(auditSubject audit.Subject) func(http.Handler) http.Handler {
 				status := wrapped.statusCode
 				if status >= 200 && status < 300 {
 					// Извлекаем метрики из запроса
-					metrics := extractMetrics(r)
+					metrics := extractMetrics(r, bufferedReq)
 
 					if len(metrics) > 0 {
 						// Создаем событие аудита
@@ -98,7 +136,7 @@ func (rw *auditResponseWriter) Status() int {
 }
 
 // extractMetrics извлекает имена метрик из запроса
-func extractMetrics(r *http.Request) []string {
+func extractMetrics(r *http.Request, bufferedReq *bufferedRequest) []string {
 	metrics := []string{}
 
 	// Для простых запросов с URL параметрами
@@ -106,12 +144,31 @@ func extractMetrics(r *http.Request) []string {
 		metrics = append(metrics, metricName)
 	}
 
-	// Для JSON запросов с путями /update и /updates
-	// Поскольку тело уже прочитано, мы не можем извлечь метрики из JSON
-	// В реальном проекте можно было бы использовать буферизацию тела
-
-	// Для пути /updates (батч) мы не знаем имена метрик из URL
-	// Это можно решить через middleware, которое кеширует тело
+	// Для JSON запросов с путем /update
+	if bufferedReq != nil && bufferedReq.bodyBuffer != nil {
+		// Парсим JSON из буфера
+		if strings.HasSuffix(r.URL.Path, "/update") && !strings.Contains(r.URL.Path, "/updates") {
+			// Одиночный update
+			var metric models.Metrics
+			bodyBytes := bufferedReq.bodyBuffer.Bytes()
+			decoder := json.NewDecoder(bytes.NewReader(bodyBytes))
+			if err := decoder.Decode(&metric); err == nil && metric.ID != "" {
+				metrics = append(metrics, metric.ID)
+			}
+		} else if r.URL.Path == "/updates" {
+			// Батч updates
+			var batchMetrics []models.Metrics
+			bodyBytes := bufferedReq.bodyBuffer.Bytes()
+			decoder := json.NewDecoder(bytes.NewReader(bodyBytes))
+			if err := decoder.Decode(&batchMetrics); err == nil {
+				for _, metric := range batchMetrics {
+					if metric.ID != "" {
+						metrics = append(metrics, metric.ID)
+					}
+				}
+			}
+		}
+	}
 
 	return metrics
 }

@@ -9,34 +9,94 @@ import (
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 )
 
-// Storage интерфейс для работы с метриками
+// Storage определяет интерфейс для работы с метриками.
+// Реализации могут хранить данные в памяти, файлах или базе данных.
+//
+// Основные операции:
+//   - SetGauge: установка значения gauge-метрики
+//   - IncrementCounter: увеличение значения counter-метрики
+//   - GetMetric: получение метрики по имени и типу
+//   - GetAllMetrics: получение всех метрик
+//   - SaveToFile/LoadFromFile: сохранение/загрузка в файл
+//   - UpdateMetricsBatch: батчевое обновление метрик
 type Storage interface {
+	// SetGauge устанавливает значение gauge-метрики.
+	// Если метрика с таким именем уже существует, значение обновляется.
+	// Контекст используется для отмены операции при необходимости.
 	SetGauge(ctx context.Context, name string, value float64)
+
+	// IncrementCounter увеличивает значение counter-метрики.
+	// Если метрика с таким именем не существует, она создается.
+	// Контекст используется для отмены операции при необходимости.
 	IncrementCounter(ctx context.Context, name string, delta int64)
+
+	// GetMetric возвращает значение метрики по имени и типу.
+	// Второе возвращаемое значение указывает, была ли найдена метрика.
+	// Возвращает nil, false если метрика не найдена.
 	GetMetric(ctx context.Context, name string, metricType models.MetricType) (interface{}, bool)
+
+	// GetAllMetrics возвращает все метрики из хранилища.
+	// Возвращает два мапа: gauge метрики и counter метрики.
+	// Если хранилище пустое, возвращаются пустые мапы.
 	GetAllMetrics(ctx context.Context) (map[string]float64, map[string]int64)
+
+	// GetMetricForJSON возвращает метрику в формате для JSON API.
+	// Используется для сериализации метрик в JSON ответах.
+	// Если метрика не найдена, возвращает пустую структуру Metrics.
 	GetMetricForJSON(ctx context.Context, name string, metricType models.MetricType) models.Metrics
+
+	// SaveToFile сохраняет все метрики в файл в формате JSON.
+	// Используется для создания резервных копий и восстановления состояния.
+	// Возвращает ошибку если не удалось записать файл.
 	SaveToFile(ctx context.Context, filename string) error
+
+	// LoadFromFile загружает метрики из файла в формате JSON.
+	// Если файл не существует, операция завершается успешно без загрузки данных.
+	// Возвращает ошибку если не удалось прочитать или разобрать файл.
 	LoadFromFile(ctx context.Context, filename string) error
+
+	// UpdateMetricsBatch обновляет метрики батчем.
+	// Принимает массив метрик и применяет их все за одну операцию.
+	// Для gauge метрик значения заменяются, для counter - добавляются.
+	// Возвращает ошибку если не удалось обновить метрики.
 	UpdateMetricsBatch(ctx context.Context, metrics []models.Metrics) error
 }
 
-// MemStorage - хранилище для метрик в памяти
+// MemStorage - хранилище для метрик в памяти.
+// Использует sync.RWMutex для безопасного конкурентного доступа.
+//
+// Пример использования:
+//
+//	storage := NewMemStorage()
+//	storage.SetGauge(ctx, "cpu_usage", 42.5)
+//	storage.IncrementCounter(ctx, "requests", 1)
+//	value, exists := storage.GetMetric(ctx, "cpu_usage", models.Gauge)
 type MemStorage struct {
 	gauges   map[string]float64
 	counters map[string]int64
 	mu       sync.RWMutex
 }
 
-// NewMemStorage создает и возвращает новый экземпляр MemStorage
+// NewMemStorage создает и возвращает новый экземпляр MemStorage.
+// Инициализирует внутренние структуры с предварительным выделением памяти.
+//
+// Возвращает:
+//   - *MemStorage: новое in-memory хранилище метрик
 func NewMemStorage() *MemStorage {
 	return &MemStorage{
-		gauges:   make(map[string]float64),
-		counters: make(map[string]int64),
+		gauges:   make(map[string]float64, 50), // предварительное выделение
+		counters: make(map[string]int64, 50),   // предварительное выделение
 	}
 }
 
-// SetGauge устанавливает значение для gauge-метрики
+// SetGauge устанавливает значение для gauge-метрики.
+// Проверяет контекст перед операция - если контекст отменен, операция не выполняется.
+// Операция защищена мьютексом для безопасного конкурентного доступа.
+//
+// Параметры:
+//   - ctx: контекст для отмены операции
+//   - name: имя метрики
+//   - value: значение метрики (float64)
 func (m *MemStorage) SetGauge(ctx context.Context, name string, value float64) {
 	// Проверяем отмену контекста перед операцией
 	if err := ctx.Err(); err != nil {
@@ -48,7 +108,15 @@ func (m *MemStorage) SetGauge(ctx context.Context, name string, value float64) {
 	m.gauges[name] = value
 }
 
-// IncrementCounter увеличивает значение counter-метрики
+// IncrementCounter увеличивает значение counter-метрики.
+// Проверяет контекст перед операцией - если контекст отменен, операция не выполняется.
+// Если метрика с таким именем не существует, она создается.
+// Операция защищена мьютексом для безопасного конкурентного доступа.
+//
+// Параметры:
+//   - ctx: контекст для отмены операции
+//   - name: имя метрики
+//   - delta: значение для добавления (может быть отрицательным)
 func (m *MemStorage) IncrementCounter(ctx context.Context, name string, delta int64) {
 	if err := ctx.Err(); err != nil {
 		return
@@ -59,7 +127,12 @@ func (m *MemStorage) IncrementCounter(ctx context.Context, name string, delta in
 	m.counters[name] += delta
 }
 
-// GetAllMetrics возвращает все метрики из хранилища
+// GetAllMetrics возвращает все метрики из хранилища.
+// Проверяет контекст перед операцией - если контекст отменен, возвращает пустые мапы.
+//
+// Возвращает:
+//   - map[string]float64: gauge метрики
+//   - map[string]int64: counter метрики
 func (m *MemStorage) GetAllMetrics(ctx context.Context) (map[string]float64, map[string]int64) {
 	if err := ctx.Err(); err != nil {
 		return make(map[string]float64), make(map[string]int64)
@@ -68,12 +141,13 @@ func (m *MemStorage) GetAllMetrics(ctx context.Context) (map[string]float64, map
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	// Создаем копии мапов
 	gaugesCopy := make(map[string]float64, len(m.gauges))
+	countersCopy := make(map[string]int64, len(m.counters))
+
 	for k, v := range m.gauges {
 		gaugesCopy[k] = v
 	}
-
-	countersCopy := make(map[string]int64, len(m.counters))
 	for k, v := range m.counters {
 		countersCopy[k] = v
 	}
@@ -81,7 +155,18 @@ func (m *MemStorage) GetAllMetrics(ctx context.Context) (map[string]float64, map
 	return gaugesCopy, countersCopy
 }
 
-// GetMetric возвращает метрику по имени и типу
+// GetMetric возвращает метрику по имени и типу.
+// Проверяет контекст перед операцией - если контекст отменен, возвращает false.
+// Использует RLock для безопасного конкурентного чтения.
+//
+// Параметры:
+//   - ctx: контекст для отмены операции
+//   - name: имя метрики
+//   - metricType: тип метрики (gauge или counter)
+//
+// Возвращает:
+//   - interface{}: значение метрики (float64 для gauge, int64 для counter)
+//   - bool: true если метрика найдена, false если нет
 func (m *MemStorage) GetMetric(ctx context.Context, name string, metricType models.MetricType) (interface{}, bool) {
 	if err := ctx.Err(); err != nil {
 		return nil, false
@@ -108,7 +193,17 @@ func (m *MemStorage) GetMetric(ctx context.Context, name string, metricType mode
 	}
 }
 
-// GetMetricForJSON возвращает метрику в формате для JSON
+// GetMetricForJSON возвращает метрику в формате для JSON.
+// Проверяет контекст перед операцией - если контекст отменен, возвращает пустую структуру.
+// Для gauge метрик заполняет поле Value, для counter - поле Delta.
+//
+// Параметры:
+//   - ctx: контекст для отмены операции
+//   - name: имя метрики
+//   - metricType: тип метрики (gauge или counter)
+//
+// Возвращает:
+//   - models.Metrics: структура метрики готовой для JSON сериализации
 func (m *MemStorage) GetMetricForJSON(ctx context.Context, name string, metricType models.MetricType) models.Metrics {
 	if err := ctx.Err(); err != nil {
 		return models.Metrics{}
@@ -120,25 +215,38 @@ func (m *MemStorage) GetMetricForJSON(ctx context.Context, name string, metricTy
 	switch metricType {
 	case models.Gauge:
 		if value, exists := m.gauges[name]; exists {
+			// Создаем копию значения
+			v := value
 			return models.Metrics{
 				ID:    name,
 				MType: "gauge",
-				Value: &value,
+				Value: &v,
 			}
 		}
 	case models.Counter:
 		if value, exists := m.counters[name]; exists {
+			v := value
 			return models.Metrics{
 				ID:    name,
 				MType: "counter",
-				Delta: &value,
+				Delta: &v,
 			}
 		}
 	}
 	return models.Metrics{}
 }
 
-// SaveToFile сохраняет все метрики в файл в формате JSON
+// SaveToFile сохраняет все метрики в файл в формате JSON.
+// Предварительно выделяет слайс с нужной capacity для уменьшения аллокаций.
+// Использует Marshal вместо MarshalIndent для производительности.
+// Записывает с буферизацией через os.WriteFile.
+//
+// Параметры:
+//   - ctx: контекст для отмены операции
+//   - filename: путь к файлу для сохранения
+//
+// Возвращает:
+//   - error: nil при успешном сохранении, ошибку в противном случае
 func (m *MemStorage) SaveToFile(ctx context.Context, filename string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -147,35 +255,49 @@ func (m *MemStorage) SaveToFile(ctx context.Context, filename string) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	var metrics []models.FileMetric
+	// Предварительно выделяем слайс с нужной capacity
+	totalMetrics := len(m.gauges) + len(m.counters)
+	metrics := make([]models.FileMetric, 0, totalMetrics)
 
 	for name, value := range m.gauges {
-		valueCopy := value
+		v := value
 		metrics = append(metrics, models.FileMetric{
 			ID:    name,
 			Type:  "gauge",
-			Value: &valueCopy,
+			Value: &v,
 		})
 	}
 
 	for name, value := range m.counters {
-		valueCopy := value
+		v := value
 		metrics = append(metrics, models.FileMetric{
 			ID:    name,
 			Type:  "counter",
-			Delta: &valueCopy,
+			Delta: &v,
 		})
 	}
 
-	data, err := json.MarshalIndent(metrics, "", "  ")
+	// Используем Marshal вместо MarshalIndent для производительности
+	data, err := json.Marshal(metrics)
 	if err != nil {
 		return err
 	}
 
+	// Записываем с буферизацией
 	return os.WriteFile(filename, data, 0644)
 }
 
-// LoadFromFile загружает метрики из файла
+// LoadFromFile загружает метрики из файла.
+// Проверяет существование файла перед чтением.
+// Если файл не существует, возвращает nil без ошибки.
+// Очищает существующие метрики перед загрузкой новых.
+//
+// Параметры:
+//   - ctx: контекст для отмены операции
+//   - filename: путь к файлу для загрузки
+//
+// Возвращает:
+//   - error: nil при успешной загрузке или если файл не существует
 func (m *MemStorage) LoadFromFile(ctx context.Context, filename string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -198,8 +320,9 @@ func (m *MemStorage) LoadFromFile(ctx context.Context, filename string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.gauges = make(map[string]float64)
-	m.counters = make(map[string]int64)
+	// Очищаем существующие метрики
+	m.gauges = make(map[string]float64, len(fileMetrics))
+	m.counters = make(map[string]int64, len(fileMetrics))
 
 	for _, fm := range fileMetrics {
 		switch fm.Type {
@@ -217,7 +340,17 @@ func (m *MemStorage) LoadFromFile(ctx context.Context, filename string) error {
 	return nil
 }
 
-// UpdateMetricsBatch обновляет метрики батчем
+// UpdateMetricsBatch обновляет метрики батчем.
+// Предварительно проверяет capacity мапов и увеличивает если нужно.
+// Для gauge метрик значения заменяются, для counter - добавляются.
+// Игнорирует метрики с nil значениями.
+//
+// Параметры:
+//   - ctx: контекст для отмены операции
+//   - metrics: массив метрик для обновления
+//
+// Возвращает:
+//   - error: nil при успешном обновлении
 func (m *MemStorage) UpdateMetricsBatch(ctx context.Context, metrics []models.Metrics) error {
 	if err := ctx.Err(); err != nil {
 		return err

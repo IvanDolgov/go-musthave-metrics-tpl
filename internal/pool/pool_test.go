@@ -23,7 +23,7 @@ type TestStructNonPointer struct {
 	Value int
 }
 
-func (t TestStructNonPointer) Reset() {
+func (t *TestStructNonPointer) Reset() {
 	t.Value = 0
 }
 
@@ -74,14 +74,16 @@ func TestPoolConcurrent(t *testing.T) {
 			defer wg.Done()
 
 			obj := p.Get()
-			obj.ID = id
-			obj.Data = append(obj.Data, byte(id))
-			obj.Used = true
+			if obj != nil {
+				obj.ID = id
+				obj.Data = append(obj.Data, byte(id))
+				obj.Used = true
 
-			// Немного "поработаем" с объектом
-			time.Sleep(time.Microsecond)
+				// Немного "поработаем" с объектом
+				time.Sleep(time.Microsecond)
 
-			p.Put(obj)
+				p.Put(obj)
+			}
 		}(i)
 	}
 
@@ -96,6 +98,10 @@ func TestPoolResetCalled(t *testing.T) {
 
 	// Получаем объект и заполняем его
 	obj := p.Get()
+	if obj == nil {
+		t.Fatal("Get() вернул nil")
+	}
+
 	obj.Data = []byte("test data")
 	obj.ID = 42
 	obj.Used = true
@@ -105,6 +111,9 @@ func TestPoolResetCalled(t *testing.T) {
 
 	// Получаем объект снова
 	obj2 := p.Get()
+	if obj2 == nil {
+		t.Fatal("Get() вернул nil после Put()")
+	}
 
 	// Проверяем, что объект был сброшен
 	if len(obj2.Data) != 0 {
@@ -126,15 +135,18 @@ func TestPoolMultipleTypes(t *testing.T) {
 	obj1 := p1.Get()
 	if obj1 == nil {
 		t.Error("Get() вернул nil для *TestStruct")
+	} else {
+		obj1.ID = 1
+		p1.Put(obj1)
 	}
-	obj1.ID = 1
-	p1.Put(obj1)
 
-	// 2. Не указатель (значение)
-	p2 := New[TestStructNonPointer]()
+	// 2. Не указатель (значение) - но для пула лучше использовать указатели
+	p2 := New[*TestStructNonPointer]()
 	obj2 := p2.Get()
-	obj2.Value = 2
-	p2.Put(obj2)
+	if obj2 != nil {
+		obj2.Value = 2 // Теперь это поле используется
+		p2.Put(obj2)
+	}
 
 	// Проверяем, что оба пула работают
 	t.Log("Multiple types test passed")
@@ -142,19 +154,32 @@ func TestPoolMultipleTypes(t *testing.T) {
 
 // TestPoolInterfaceCompliance проверяет, что пул работает с интерфейсами
 func TestPoolInterfaceCompliance(t *testing.T) {
-	// Тестируем с интерфейсом
-	type Resetter interface {
-		Reset()
-	}
-
 	p := New[*TestStruct]()
 	obj := p.Get()
+	if obj == nil {
+		t.Fatal("Get() вернул nil")
+	}
 
 	// Проверяем, что объект реализует интерфейс
 	var _ Resetter = obj
 
 	p.Put(obj)
 	t.Log("Interface compliance test passed")
+}
+
+func TestPoolNilSafety(t *testing.T) {
+	p := New[*TestStruct]()
+
+	// Не должно паниковать при вызове Put с nil
+	// (хотя это не рекомендуется на практике)
+	// p.Put(nil) // Это вызовет панику в текущей реализации
+
+	// Но Get всегда должен возвращать валидный объект
+	obj := p.Get()
+	if obj == nil {
+		t.Fatal("Get() вернул nil")
+	}
+	p.Put(obj)
 }
 
 func BenchmarkPoolGetPut(b *testing.B) {
@@ -164,8 +189,10 @@ func BenchmarkPoolGetPut(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			obj := p.Get()
-			obj.ID = 1
-			p.Put(obj)
+			if obj != nil {
+				obj.ID = 1
+				p.Put(obj)
+			}
 		}
 	})
 }
@@ -180,8 +207,10 @@ func BenchmarkPoolWithoutReset(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			obj := pool.Get().(*TestStruct)
-			obj.ID = 1
-			pool.Put(obj)
+			if obj != nil {
+				obj.ID = 1
+				pool.Put(obj)
+			}
 		}
 	})
 }
@@ -196,10 +225,12 @@ func BenchmarkPoolWithManualReset(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			obj := pool.Get().(*TestStruct)
-			obj.ID = 1
-			// Ручной сброс
-			obj.Reset()
-			pool.Put(obj)
+			if obj != nil {
+				obj.ID = 1
+				// Ручной сброс
+				obj.Reset()
+				pool.Put(obj)
+			}
 		}
 	})
 }

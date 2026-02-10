@@ -19,6 +19,13 @@ import (
 	"go.uber.org/zap"
 )
 
+// Глобальные переменные для версии сборки
+var (
+	buildVersion string
+	buildDate    string
+	buildCommit  string
+)
+
 // HTTPMetricsSender реализация отправки метрик по HTTP
 type HTTPMetricsSender struct {
 	config models.Config
@@ -97,6 +104,9 @@ func buildServerAddress(server, port string) string {
 }
 
 func run(ctx context.Context, cfg models.Config) error {
+	// Вывод информации о сборке
+	printBuildInfo()
+
 	sender := &HTTPMetricsSender{config: cfg}
 
 	metricsAgent := agent.NewMetricsAgent(cfg, sender)
@@ -119,10 +129,6 @@ func main() {
 	}
 	defer logger.Log.Sync()
 
-	// Переопределяем метод отправки метрик в агенте
-	// Это нужно сделать до создания агента
-	// В реальном проекте лучше использовать dependency injection
-
 	// Создаем корневой контекст
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -132,4 +138,27 @@ func main() {
 		logger.Log.Error("Application error", zap.Error(err))
 		os.Exit(1)
 	}
+}
+
+// printBuildInfo выводит информацию о сборке приложения
+func printBuildInfo() {
+	// Определяем значения или "N/A" если они пустые
+	version := buildVersion
+	date := buildDate
+	commit := buildCommit
+
+	if version == "" {
+		version = "N/A"
+	}
+	if date == "" {
+		date = "N/A"
+	}
+	if commit == "" {
+		commit = "N/A"
+	}
+
+	// Выводим в stdout
+	fmt.Printf("Build version: %s\n", version)
+	fmt.Printf("Build date: %s\n", date)
+	fmt.Printf("Build commit: %s\n", commit)
 }

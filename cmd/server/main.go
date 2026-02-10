@@ -23,8 +23,18 @@ import (
 	_ "net/http/pprof" // профилирование
 )
 
+// Глобальные переменные для версии сборки
+var (
+	buildVersion string
+	buildDate    string
+	buildCommit  string
+)
+
 // run запускает приложение с переданной конфигурацией
 func run(cfg models.Config) error {
+	// Вывод информации о сборке
+	printBuildInfo()
+
 	var store storage.Storage
 	var dbStorage postgres.DatabaseStorage
 
@@ -261,4 +271,27 @@ func buildServerAddress(server, port string) string {
 		return ":" + port
 	}
 	return server + ":" + port
+}
+
+// printBuildInfo выводит информацию о сборке приложения
+func printBuildInfo() {
+	// Определяем значения или "N/A" если они пустые
+	version := buildVersion
+	date := buildDate
+	commit := buildCommit
+
+	if version == "" {
+		version = "N/A"
+	}
+	if date == "" {
+		date = "N/A"
+	}
+	if commit == "" {
+		commit = "N/A"
+	}
+
+	// Выводим в stdout
+	fmt.Printf("Build version: %s\n", version)
+	fmt.Printf("Build date: %s\n", date)
+	fmt.Printf("Build commit: %s\n", commit)
 }

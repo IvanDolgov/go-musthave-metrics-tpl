@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/audit"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/buildinfo"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/config"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/middleware"
@@ -33,7 +34,7 @@ var (
 // run запускает приложение с переданной конфигурацией
 func run(cfg models.Config) error {
 	// Вывод информации о сборке
-	printBuildInfo()
+	buildinfo.Print()
 
 	var store storage.Storage
 	var dbStorage postgres.DatabaseStorage
@@ -271,27 +272,4 @@ func buildServerAddress(server, port string) string {
 		return ":" + port
 	}
 	return server + ":" + port
-}
-
-// printBuildInfo выводит информацию о сборке приложения
-func printBuildInfo() {
-	// Определяем значения или "N/A" если они пустые
-	version := buildVersion
-	date := buildDate
-	commit := buildCommit
-
-	if version == "" {
-		version = "N/A"
-	}
-	if date == "" {
-		date = "N/A"
-	}
-	if commit == "" {
-		commit = "N/A"
-	}
-
-	// Выводим в stdout
-	fmt.Printf("Build version: %s\n", version)
-	fmt.Printf("Build date: %s\n", date)
-	fmt.Printf("Build commit: %s\n", commit)
 }

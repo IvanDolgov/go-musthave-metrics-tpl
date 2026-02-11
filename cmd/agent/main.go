@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/agent"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/buildinfo"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/compress"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/config"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/hash"
@@ -105,7 +106,7 @@ func buildServerAddress(server, port string) string {
 
 func run(ctx context.Context, cfg models.Config) error {
 	// Вывод информации о сборке
-	printBuildInfo()
+	buildinfo.Print()
 
 	sender := &HTTPMetricsSender{config: cfg}
 
@@ -138,27 +139,4 @@ func main() {
 		logger.Log.Error("Application error", zap.Error(err))
 		os.Exit(1)
 	}
-}
-
-// printBuildInfo выводит информацию о сборке приложения
-func printBuildInfo() {
-	// Определяем значения или "N/A" если они пустые
-	version := buildVersion
-	date := buildDate
-	commit := buildCommit
-
-	if version == "" {
-		version = "N/A"
-	}
-	if date == "" {
-		date = "N/A"
-	}
-	if commit == "" {
-		commit = "N/A"
-	}
-
-	// Выводим в stdout
-	fmt.Printf("Build version: %s\n", version)
-	fmt.Printf("Build date: %s\n", date)
-	fmt.Printf("Build commit: %s\n", commit)
 }

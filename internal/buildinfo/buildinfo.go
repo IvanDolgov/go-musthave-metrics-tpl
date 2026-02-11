@@ -10,6 +10,26 @@ type BuildInfo struct {
 	Commit  string
 }
 
+// String возвращает информацию о сборке в виде строки
+func (b BuildInfo) String() string {
+	version := b.Version
+	date := b.Date
+	commit := b.Commit
+
+	if version == "" {
+		version = "N/A"
+	}
+	if date == "" {
+		date = "N/A"
+	}
+	if commit == "" {
+		commit = "N/A"
+	}
+
+	return fmt.Sprintf("Build version: %s\nBuild date: %s\nBuild commit: %s",
+		version, date, commit)
+}
+
 var (
 	// version устанавливается при сборке через -ldflags
 	version string
@@ -30,47 +50,10 @@ func Get() BuildInfo {
 
 // Print выводит информацию о сборке в stdout в требуемом формате
 func Print() {
-	info := Get()
-
-	// Определяем значения или "N/A" если они пустые
-	version := info.Version
-	date := info.Date
-	commit := info.Commit
-
-	if version == "" {
-		version = "N/A"
-	}
-	if date == "" {
-		date = "N/A"
-	}
-	if commit == "" {
-		commit = "N/A"
-	}
-
-	// Выводим в stdout
-	fmt.Printf("Build version: %s\n", version)
-	fmt.Printf("Build date: %s\n", date)
-	fmt.Printf("Build commit: %s\n", commit)
+	fmt.Print(Get().String() + "\n")
 }
 
 // String возвращает информацию о сборке в виде строки
 func String() string {
-	info := Get()
-
-	version := info.Version
-	date := info.Date
-	commit := info.Commit
-
-	if version == "" {
-		version = "N/A"
-	}
-	if date == "" {
-		date = "N/A"
-	}
-	if commit == "" {
-		commit = "N/A"
-	}
-
-	return fmt.Sprintf("Build version: %s\nBuild date: %s\nBuild commit: %s",
-		version, date, commit)
+	return Get().String()
 }

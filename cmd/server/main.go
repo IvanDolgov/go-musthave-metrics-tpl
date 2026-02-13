@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/audit"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/buildinfo"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/config"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/middleware"
@@ -23,8 +24,18 @@ import (
 	_ "net/http/pprof" // профилирование
 )
 
+// Глобальные переменные для версии сборки
+var (
+	buildVersion string
+	buildDate    string
+	buildCommit  string
+)
+
 // run запускает приложение с переданной конфигурацией
 func run(cfg models.Config) error {
+	// Вывод информации о сборке
+	buildinfo.Print()
+
 	var store storage.Storage
 	var dbStorage postgres.DatabaseStorage
 

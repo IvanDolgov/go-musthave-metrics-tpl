@@ -11,12 +11,20 @@ import (
 	"time"
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/agent"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/buildinfo"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/compress"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/config"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/hash"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 	"go.uber.org/zap"
+)
+
+// Глобальные переменные для версии сборки
+var (
+	buildVersion string
+	buildDate    string
+	buildCommit  string
 )
 
 // HTTPMetricsSender реализация отправки метрик по HTTP
@@ -97,6 +105,9 @@ func buildServerAddress(server, port string) string {
 }
 
 func run(ctx context.Context, cfg models.Config) error {
+	// Вывод информации о сборке
+	buildinfo.Print()
+
 	sender := &HTTPMetricsSender{config: cfg}
 
 	metricsAgent := agent.NewMetricsAgent(cfg, sender)
@@ -118,10 +129,6 @@ func main() {
 		os.Exit(1)
 	}
 	defer logger.Log.Sync()
-
-	// Переопределяем метод отправки метрик в агенте
-	// Это нужно сделать до создания агента
-	// В реальном проекте лучше использовать dependency injection
 
 	// Создаем корневой контекст
 	ctx, cancel := context.WithCancel(context.Background())

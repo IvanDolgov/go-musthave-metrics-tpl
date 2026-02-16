@@ -18,18 +18,19 @@ func ParseServerFlags() models.Config {
 		fileStoragePath string
 		restore         bool
 		databaseDsn     string
-		key             string // секретный ключ
-		auditFile       string // путь к файлу аудита
-		auditURL        string // URL для отправки аудита
+		key             string
+		cryptoKey       string // путь к приватному ключу
+		auditFile       string
+		auditURL        string
 	)
 
-	// Регистрируем флаги для сервера
 	flag.StringVar(&address, "a", "localhost:8080", "server address")
 	flag.Int64Var(&storeInterval, "i", 300, "store interval in seconds")
 	flag.StringVar(&fileStoragePath, "f", "", "path storage file")
 	flag.BoolVar(&restore, "r", true, "upload previous metrics from file")
 	flag.StringVar(&databaseDsn, "d", "", "database_dsn")
 	flag.StringVar(&key, "k", "", "secret key for request signing")
+	flag.StringVar(&cryptoKey, "crypto-key", "", "path to private key file for decryption")
 	flag.StringVar(&auditFile, "audit-file", "", "path to audit log file")
 	flag.StringVar(&auditURL, "audit-url", "", "URL for remote audit logging")
 
@@ -56,7 +57,11 @@ func ParseServerFlags() models.Config {
 		key = envKey
 	}
 
-	// Новые переменные окружения для аудита
+	// параметр для крипто-ключа
+	if envCryptoKey := os.Getenv("CRYPTO_KEY"); envCryptoKey != "" {
+		cryptoKey = envCryptoKey
+	}
+
 	if envAuditFile := os.Getenv("AUDIT_FILE"); envAuditFile != "" {
 		auditFile = envAuditFile
 	}
@@ -77,6 +82,7 @@ func ParseServerFlags() models.Config {
 		Restore:         restore,
 		DatabaseDSN:     databaseDsn,
 		Key:             key,
+		CryptoKey:       cryptoKey,
 		AuditFile:       auditFile,
 		AuditURL:        auditURL,
 	}
@@ -86,17 +92,18 @@ func ParseServerFlags() models.Config {
 func ParseAgentFlags() models.Config {
 	var (
 		address        string
-		pollInterval   int64  // в секундах для совместимости с тестами
-		reportInterval int64  // в секундах для совместимости с тестами
-		key            string // секретный ключ
-		rateLimit      int64  // rate limit
+		pollInterval   int64
+		reportInterval int64
+		key            string
+		cryptoKey      string // путь к публичному ключу
+		rateLimit      int64
 	)
 
-	// Регистрируем флаги для агента
 	flag.StringVar(&address, "a", "localhost:8080", "server address")
 	flag.Int64Var(&pollInterval, "p", 2, "poll interval in seconds")
 	flag.Int64Var(&reportInterval, "r", 10, "report interval in seconds")
 	flag.StringVar(&key, "k", "", "secret key for request signing")
+	flag.StringVar(&cryptoKey, "crypto-key", "", "path to public key file for encryption")
 	flag.Int64Var(&rateLimit, "l", 1, "rate limit")
 
 	flag.Parse()
@@ -113,8 +120,13 @@ func ParseAgentFlags() models.Config {
 		key = envKey
 	}
 
+	// параметр для крипто-ключа
+	if envCryptoKey := os.Getenv("CRYPTO_KEY"); envCryptoKey != "" {
+		cryptoKey = envCryptoKey
+	}
+
 	if envRateLimit := os.Getenv("RATE_LIMIT"); envRateLimit != "" {
-		key = envRateLimit
+		rateLimit, _ = strconv.ParseInt(envRateLimit, 10, 64)
 	}
 
 	// Парсим адрес на server и port
@@ -127,11 +139,12 @@ func ParseAgentFlags() models.Config {
 		PollInterval:   time.Duration(pollInterval) * time.Second,
 		ReportInterval: time.Duration(reportInterval) * time.Second,
 		Key:            key,
+		CryptoKey:      cryptoKey,
 		RateLimit:      rateLimit,
 	}
 }
 
-// остальные функции остаются без изменений...
+// остальные функции без изменений...
 func getEnvBool(key string, defaultVal bool) bool {
 	if value, exists := os.LookupEnv(key); exists {
 		if boolVal, err := strconv.ParseBool(value); err == nil {
@@ -156,5 +169,5 @@ func parseAddress(address string) (string, string) {
 	if len(parts) == 2 {
 		return parts[0], parts[1]
 	}
-	return parts[0], "8080" // порт по умолчанию
+	return parts[0], "8080"
 }

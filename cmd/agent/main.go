@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/buildinfo"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/compress"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/config"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/crypto"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/hash"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
@@ -29,7 +31,27 @@ var (
 
 // HTTPMetricsSender реализация отправки метрик по HTTP
 type HTTPMetricsSender struct {
-	config models.Config
+	config    models.Config
+	publicKey interface{} // *rsa.PublicKey
+}
+
+// NewHTTPMetricsSender создает новый экземпляр HTTPMetricsSender
+func NewHTTPMetricsSender(cfg models.Config) (*HTTPMetricsSender, error) {
+	sender := &HTTPMetricsSender{
+		config: cfg,
+	}
+
+	// Загружаем публичный ключ, если указан путь
+	if cfg.CryptoKey != "" {
+		pubKey, err := crypto.LoadPublicKey(cfg.CryptoKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load public key: %w", err)
+		}
+		sender.publicKey = pubKey
+		logger.Log.Info("Public key loaded for encryption", zap.String("path", cfg.CryptoKey))
+	}
+
+	return sender, nil
 }
 
 // SendMetricsBatch отправляет батч метрик на сервер
@@ -43,9 +65,24 @@ func (s *HTTPMetricsSender) SendMetricsBatch(ctx context.Context, metrics []mode
 		return fmt.Errorf("error encoding JSON: %w", err)
 	}
 
-	hashValue := hash.ComputeHMACSHA256(jsonData, s.config.Key)
+	// Шифруем данные, если загружен публичный ключ
+	dataToSend := jsonData
+	encryptionEnabled := false
+	if s.publicKey != nil {
+		pubKey := s.publicKey.(*rsa.PublicKey)
+		encryptedData, err := crypto.EncryptWithPublicKey(jsonData, pubKey)
+		if err != nil {
+			logger.Log.Error("Failed to encrypt metrics data", zap.Error(err))
+			return fmt.Errorf("encryption error: %w", err)
+		}
+		dataToSend = encryptedData
+		encryptionEnabled = true
+		logger.Log.Debug("Metrics encrypted", zap.Int("original_size", len(jsonData)), zap.Int("encrypted_size", len(encryptedData)))
+	}
 
-	compressedData, err := compress.GzipCompress(jsonData)
+	hashValue := hash.ComputeHMACSHA256(dataToSend, s.config.Key)
+
+	compressedData, err := compress.GzipCompress(dataToSend)
 	if err != nil {
 		logger.Log.Error("Failed to compress metrics data", zap.Error(err))
 		return fmt.Errorf("gzip compress error: %w", err)
@@ -64,6 +101,11 @@ func (s *HTTPMetricsSender) SendMetricsBatch(ctx context.Context, metrics []mode
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set("Accept-Encoding", "gzip")
+
+	// Добавляем заголовок, указывающий, что данные зашифрованы
+	if encryptionEnabled {
+		req.Header.Set("X-Encrypted", "true")
+	}
 
 	if hashValue != "" {
 		req.Header.Set("HashSHA256", hashValue)
@@ -92,6 +134,7 @@ func (s *HTTPMetricsSender) SendMetricsBatch(ctx context.Context, metrics []mode
 	logger.Log.Info("Successfully sent metrics batch",
 		zap.Int("metrics_count", len(metrics)),
 		zap.Duration("duration", duration),
+		zap.Bool("encrypted", encryptionEnabled),
 	)
 
 	return nil
@@ -108,7 +151,10 @@ func run(ctx context.Context, cfg models.Config) error {
 	// Вывод информации о сборке
 	buildinfo.Print()
 
-	sender := &HTTPMetricsSender{config: cfg}
+	sender, err := NewHTTPMetricsSender(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to create metrics sender: %w", err)
+	}
 
 	metricsAgent := agent.NewMetricsAgent(cfg, sender)
 

@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/rsa"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,6 +17,7 @@ import (
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/audit"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/buildinfo"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/config"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/crypto"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/middleware"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
@@ -21,7 +26,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 
-	_ "net/http/pprof" // профилирование
+	_ "net/http/pprof"
 )
 
 // Глобальные переменные для версии сборки
@@ -30,6 +35,80 @@ var (
 	buildDate    string
 	buildCommit  string
 )
+
+// Middleware для расшифровки тела запроса
+func decryptionMiddleware(privateKeyPath string) func(next http.Handler) http.Handler {
+	var privateKey interface{} // *rsa.PrivateKey
+
+	// Загружаем приватный ключ при инициализации middleware
+	if privateKeyPath != "" {
+		key, err := crypto.LoadPrivateKey(privateKeyPath)
+		if err != nil {
+			logger.Log.Error("Failed to load private key", zap.String("path", privateKeyPath), zap.Error(err))
+		} else {
+			privateKey = key
+			logger.Log.Info("Private key loaded for decryption", zap.String("path", privateKeyPath))
+		}
+	}
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Проверяем, нужно ли расшифровывать
+			if privateKey == nil || r.Header.Get("X-Encrypted") != "true" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Читаем зашифрованное тело
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, "Failed to read request body", http.StatusBadRequest)
+				return
+			}
+			r.Body.Close()
+
+			// Декомпрессия, если нужно
+			var dataToDecrypt []byte
+			if r.Header.Get("Content-Encoding") == "gzip" {
+				gzipReader, err := gzip.NewReader(bytes.NewReader(body))
+				if err != nil {
+					http.Error(w, "Failed to decompress data", http.StatusBadRequest)
+					return
+				}
+				dataToDecrypt, err = io.ReadAll(gzipReader)
+				gzipReader.Close()
+				if err != nil {
+					http.Error(w, "Failed to read decompressed data", http.StatusBadRequest)
+					return
+				}
+			} else {
+				dataToDecrypt = body
+			}
+
+			// Расшифровываем данные
+			privKey := privateKey.(*rsa.PrivateKey)
+			decryptedData, err := crypto.DecryptWithPrivateKey(dataToDecrypt, privKey)
+			if err != nil {
+				logger.Log.Error("Failed to decrypt request body", zap.Error(err))
+				http.Error(w, "Decryption failed", http.StatusBadRequest)
+				return
+			}
+
+			logger.Log.Debug("Request decrypted successfully",
+				zap.Int("encrypted_size", len(dataToDecrypt)),
+				zap.Int("decrypted_size", len(decryptedData)))
+
+			// Создаем новый запрос с расшифрованными данными
+			r.Body = io.NopCloser(bytes.NewReader(decryptedData))
+			r.ContentLength = int64(len(decryptedData))
+
+			// Удаляем заголовок, чтобы следующие middleware не пытались расшифровать снова
+			r.Header.Del("X-Encrypted")
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
 
 // run запускает приложение с переданной конфигурацией
 func run(cfg models.Config) error {
@@ -46,15 +125,10 @@ func run(cfg models.Config) error {
 	ctx := context.Background()
 
 	// ВЫБОР ХРАНИЛИЩА ПО ПРИОРИТЕТУ:
-	// 1. PostgreSQL (если указан DSN)
-	// 2. File storage (если указан путь к файлу)
-	// 3. In-memory storage (по умолчанию)
-
 	if cfg.DatabaseDSN != "" {
 		logger.Log.Info("Using PostgreSQL storage", zap.String("dsn", cfg.DatabaseDSN))
 		pgStorage, err := postgres.NewPostgresStorage(ctx, cfg.DatabaseDSN)
 		if err != nil {
-			// ВОЗВРАЩАЕМ ОШИБКУ НЕМЕДЛЕННО
 			return fmt.Errorf("failed to initialize PostgreSQL storage: %w", err)
 		}
 		store = pgStorage
@@ -62,12 +136,10 @@ func run(cfg models.Config) error {
 		defer pgStorage.Close()
 	}
 
-	// Если PostgreSQL не инициализирован, проверяем file storage
 	if store == nil && cfg.FileStoragePath != "" {
 		logger.Log.Info("Using file storage", zap.String("path", cfg.FileStoragePath))
 		fileStorage := storage.NewMemStorage()
 
-		// Загружаем метрики из файла при старте
 		if cfg.Restore {
 			if err := fileStorage.LoadFromFile(ctx, cfg.FileStoragePath); err != nil {
 				logger.Log.Warn("Failed to load metrics from file",
@@ -81,46 +153,39 @@ func run(cfg models.Config) error {
 		store = fileStorage
 	}
 
-	// Если ни PostgreSQL, ни file storage не указаны - используем memory storage
 	if store == nil {
 		logger.Log.Info("Using in-memory storage (no database or file storage configured)")
 		store = storage.NewMemStorage()
 	}
 
-	// Регистрируем файлового наблюдателя, если указан путь
 	if cfg.AuditFile != "" {
 		fileObserver := audit.NewFileObserver(cfg.AuditFile)
 		auditSubject.Register(fileObserver)
 		logger.Log.Info("File audit enabled", zap.String("file", cfg.AuditFile))
 	}
 
-	// Регистрируем удаленного наблюдателя, если указан URL
 	if cfg.AuditURL != "" {
 		remoteObserver := audit.NewRemoteObserver(cfg.AuditURL)
 		auditSubject.Register(remoteObserver)
 		logger.Log.Info("Remote audit enabled", zap.String("url", cfg.AuditURL))
 	}
 
-	// создаем строку с сервером
 	fullPathServer := buildServerAddress(cfg.Server, cfg.Port)
 
 	// создаем роутер
 	router := chi.NewRouter()
 
-	// Middleware
+	// Middleware (порядок важен!)
 	router.Use(middleware.WithLogging)
 	router.Use(middleware.WithGzip)
 
-	// Middleware для проверки хеша ДО обработки тела запроса
+	// Добавляем middleware для расшифровки ДО проверки хеша
+	router.Use(decryptionMiddleware(cfg.CryptoKey))
+
 	router.Use(middleware.HashValidation(cfg.Key))
-
-	// Middleware для добавления хеша в исходящие ответы
 	router.Use(middleware.HashResponse(cfg.Key))
-
-	// Middleware для аудита
 	router.Use(middleware.WithAudit(auditSubject))
 
-	// Middleware для синхронного сохранения (только для file storage)
 	if cfg.StoreInterval == 0 {
 		if memStorage, ok := store.(*storage.MemStorage); ok && cfg.FileStoragePath != "" {
 			router.Use(middleware.WithSyncSave(memStorage, cfg.FileStoragePath))
@@ -134,21 +199,14 @@ func run(cfg models.Config) error {
 	})
 	router.Post(`/update/{type_metric}/{metric}/{value_metric}`, getMetrics(store))
 	router.Post(`/update/{type_metric}/{metric}/{value_metric}/`, getMetrics(store))
-
-	// НОВЫЕ ХЕНДЛЕРЫ ДЛЯ БАТЧЕВОГО ОБНОВЛЕНИЯ
 	router.Post(`/updates`, updateMetricsBatch(store))
 	router.Post(`/updates/`, updateMetricsBatch(store))
-
 	router.Post(`/update`, getJSONMetric(store))
 	router.Post(`/update/`, getJSONMetric(store))
-
 	router.Post(`/value`, sendJSONMetric(store))
 	router.Post(`/value/`, sendJSONMetric(store))
-
 	router.Get(`/value/{type_metric}/{metric}`, sendMetrics(store))
 	router.Get(`/value/{type_metric}/{metric}/`, sendMetrics(store))
-
-	// Хендлер проверки подключения к БД
 	router.Get(`/ping`, checkConnectDatabase(dbStorage))
 	router.Get(`/ping/`, checkConnectDatabase(dbStorage))
 
@@ -182,6 +240,7 @@ func run(cfg models.Config) error {
 			zap.String("file_storage_path", cfg.FileStoragePath),
 			zap.Bool("restore", cfg.Restore),
 			zap.Bool("database_enabled", dbStorage != nil),
+			zap.Bool("encryption_enabled", cfg.CryptoKey != ""),
 		)
 
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -222,7 +281,6 @@ func run(cfg models.Config) error {
 		logger.Log.Info("Received signal, shutting down gracefully",
 			zap.String("signal", sig.String()))
 
-		// Сохраняем метрики перед завершением (только для file storage)
 		if memStorage, ok := store.(*storage.MemStorage); ok && cfg.FileStoragePath != "" {
 			logger.Log.Info("Saving metrics before shutdown")
 			if err := memStorage.SaveToFile(ctx, cfg.FileStoragePath); err != nil {

@@ -15,7 +15,7 @@ type Config struct {
 	DatabaseDSN     string
 	Key             string // ключ для шифрования
 	RateLimit       int64  // количество потоков
-	// Новые поля для аудита
-	AuditFile string // путь к файлу аудита
-	AuditURL  string // URL для отправки аудита
+	AuditFile       string // путь к файлу аудита
+	AuditURL        string // URL для отправки аудита
+	CryptoKey       string // путь к файлу с ключом (публичным для агента, приватным для сервера)
 }

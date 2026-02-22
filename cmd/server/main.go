@@ -256,56 +256,67 @@ func run(cfg models.Config) error {
 				ticker := time.NewTicker(time.Duration(cfg.StoreInterval) * time.Second)
 				defer ticker.Stop()
 
-				for range ticker.C {
-					if err := memStorage.SaveToFile(ctx, cfg.FileStoragePath); err != nil {
-						logger.Log.Error("Failed to save metrics to file",
-							zap.String("file", cfg.FileStoragePath),
-							zap.Error(err),
-						)
-					} else {
-						logger.Log.Debug("Metrics saved to file",
-							zap.String("file", cfg.FileStoragePath),
-						)
+				for {
+					select {
+					case <-ticker.C:
+						if err := memStorage.SaveToFile(ctx, cfg.FileStoragePath); err != nil {
+							logger.Log.Error("Failed to save metrics to file",
+								zap.String("file", cfg.FileStoragePath),
+								zap.Error(err),
+							)
+						} else {
+							logger.Log.Debug("Metrics saved to file",
+								zap.String("file", cfg.FileStoragePath),
+							)
+						}
+					case <-ctx.Done():
+						// Контекст отменен, выходим из горутины
+						return
 					}
 				}
 			}()
 		}
 	}
 
-	// Ожидаем сигналы завершения
+	// Канал для сигналов ОС
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
+	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
 
 	select {
 	case sig := <-sigChan:
-		logger.Log.Info("Received signal, shutting down gracefully",
+		logger.Log.Info("Received signal, initiating graceful shutdown",
 			zap.String("signal", sig.String()))
 
+		// Создаем контекст для graceful shutdown с таймаутом
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer shutdownCancel()
+
+		// Начинаем graceful shutdown сервера
+		logger.Log.Info("Shutting down HTTP server...")
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Log.Error("HTTP server shutdown error", zap.Error(err))
+		}
+
+		// Сохраняем метрики перед завершением
 		if memStorage, ok := store.(*storage.MemStorage); ok && cfg.FileStoragePath != "" {
 			logger.Log.Info("Saving metrics before shutdown")
-			if err := memStorage.SaveToFile(ctx, cfg.FileStoragePath); err != nil {
+			saveCtx, saveCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer saveCancel()
+
+			if err := memStorage.SaveToFile(saveCtx, cfg.FileStoragePath); err != nil {
 				logger.Log.Error("Failed to save metrics before shutdown", zap.Error(err))
 			} else {
 				logger.Log.Info("Metrics saved successfully before shutdown")
 			}
 		}
 
+		logger.Log.Info("Server stopped gracefully")
+
 	case err := <-serverErr:
 		logger.Log.Error("Server error", zap.Error(err))
 		return err
 	}
 
-	// Graceful shutdown
-	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	logger.Log.Info("Shutting down server...")
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		logger.Log.Error("Server shutdown error", zap.Error(err))
-		return err
-	}
-
-	logger.Log.Info("Server stopped gracefully")
 	return nil
 }
 
@@ -319,7 +330,7 @@ func main() {
 	defer logger.Log.Sync()
 
 	if err := run(cfg); err != nil {
-		logger.Log.Info("Application error", zap.Error(err))
+		logger.Log.Error("Application error", zap.Error(err))
 		fmt.Fprintf(os.Stderr, "Application error: %v\n", err)
 		os.Exit(1)
 	}

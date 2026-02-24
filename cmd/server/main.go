@@ -1,12 +1,8 @@
 package main
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
-	"crypto/rsa"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,7 +13,6 @@ import (
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/audit"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/buildinfo"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/config"
-	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/crypto"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/middleware"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
@@ -35,80 +30,6 @@ var (
 	buildDate    string
 	buildCommit  string
 )
-
-// Middleware для расшифровки тела запроса
-func decryptionMiddleware(privateKeyPath string) func(next http.Handler) http.Handler {
-	var privateKey interface{} // *rsa.PrivateKey
-
-	// Загружаем приватный ключ при инициализации middleware
-	if privateKeyPath != "" {
-		key, err := crypto.LoadPrivateKey(privateKeyPath)
-		if err != nil {
-			logger.Log.Error("Failed to load private key", zap.String("path", privateKeyPath), zap.Error(err))
-		} else {
-			privateKey = key
-			logger.Log.Info("Private key loaded for decryption", zap.String("path", privateKeyPath))
-		}
-	}
-
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Проверяем, нужно ли расшифровывать
-			if privateKey == nil || r.Header.Get("X-Encrypted") != "true" {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			// Читаем зашифрованное тело
-			body, err := io.ReadAll(r.Body)
-			if err != nil {
-				http.Error(w, "Failed to read request body", http.StatusBadRequest)
-				return
-			}
-			r.Body.Close()
-
-			// Декомпрессия, если нужно
-			var dataToDecrypt []byte
-			if r.Header.Get("Content-Encoding") == "gzip" {
-				gzipReader, err := gzip.NewReader(bytes.NewReader(body))
-				if err != nil {
-					http.Error(w, "Failed to decompress data", http.StatusBadRequest)
-					return
-				}
-				dataToDecrypt, err = io.ReadAll(gzipReader)
-				gzipReader.Close()
-				if err != nil {
-					http.Error(w, "Failed to read decompressed data", http.StatusBadRequest)
-					return
-				}
-			} else {
-				dataToDecrypt = body
-			}
-
-			// Расшифровываем данные
-			privKey := privateKey.(*rsa.PrivateKey)
-			decryptedData, err := crypto.DecryptWithPrivateKey(dataToDecrypt, privKey)
-			if err != nil {
-				logger.Log.Error("Failed to decrypt request body", zap.Error(err))
-				http.Error(w, "Decryption failed", http.StatusBadRequest)
-				return
-			}
-
-			logger.Log.Debug("Request decrypted successfully",
-				zap.Int("encrypted_size", len(dataToDecrypt)),
-				zap.Int("decrypted_size", len(decryptedData)))
-
-			// Создаем новый запрос с расшифрованными данными
-			r.Body = io.NopCloser(bytes.NewReader(decryptedData))
-			r.ContentLength = int64(len(decryptedData))
-
-			// Удаляем заголовок, чтобы следующие middleware не пытались расшифровать снова
-			r.Header.Del("X-Encrypted")
-
-			next.ServeHTTP(w, r)
-		})
-	}
-}
 
 // run запускает приложение с переданной конфигурацией
 func run(cfg models.Config) error {
@@ -179,8 +100,8 @@ func run(cfg models.Config) error {
 	router.Use(middleware.WithLogging)
 	router.Use(middleware.WithGzip)
 
-	// Добавляем middleware для расшифровки ДО проверки хеша
-	router.Use(decryptionMiddleware(cfg.CryptoKey))
+	// Используем middleware из internal/middleware
+	router.Use(middleware.DecryptionMiddleware(cfg.CryptoKey))
 
 	router.Use(middleware.HashValidation(cfg.Key))
 	router.Use(middleware.HashResponse(cfg.Key))
@@ -192,7 +113,7 @@ func run(cfg models.Config) error {
 		}
 	}
 
-	// Ручки для метрик
+	// Ручки для метрик (эти функции должны быть определены в пакете handlers)
 	router.Get(`/`, summaryMetrics(store))
 	router.Post("/update/{type_metric}//{value_metric}", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Metric name cannot be empty", http.StatusNotFound)
@@ -270,7 +191,6 @@ func run(cfg models.Config) error {
 							)
 						}
 					case <-ctx.Done():
-						// Контекст отменен, выходим из горутины
 						return
 					}
 				}
@@ -287,17 +207,14 @@ func run(cfg models.Config) error {
 		logger.Log.Info("Received signal, initiating graceful shutdown",
 			zap.String("signal", sig.String()))
 
-		// Создаем контекст для graceful shutdown с таймаутом
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer shutdownCancel()
 
-		// Начинаем graceful shutdown сервера
 		logger.Log.Info("Shutting down HTTP server...")
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			logger.Log.Error("HTTP server shutdown error", zap.Error(err))
 		}
 
-		// Сохраняем метрики перед завершением
 		if memStorage, ok := store.(*storage.MemStorage); ok && cfg.FileStoragePath != "" {
 			logger.Log.Info("Saving metrics before shutdown")
 			saveCtx, saveCancel := context.WithTimeout(context.Background(), 5*time.Second)

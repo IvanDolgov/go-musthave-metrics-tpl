@@ -1,107 +1,28 @@
+// Package crypto предоставляет функции для шифрования и работы с ключами
 package crypto
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/pem"
-	"errors"
 	"fmt"
+	"io"
 	"os"
 )
 
-// LoadPublicKey загружает публичный ключ из файла
-func LoadPublicKey(path string) (*rsa.PublicKey, error) {
-	keyBytes, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read public key file: %w", err)
-	}
+const (
+	// AESKeySize размер ключа AES-256
+	AESKeySize = 32
+	// NonceSize размер nonce для AES-GCM
+	NonceSize = 12
+)
 
-	block, _ := pem.Decode(keyBytes)
-	if block == nil {
-		return nil, errors.New("failed to decode PEM block containing public key")
-	}
-
-	var pub interface{}
-	pub, err = x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		// Пробуем распарсить как RSA публичный ключ
-		pub, err = x509.ParsePKCS1PublicKey(block.Bytes)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse public key: %w", err)
-		}
-		return pub.(*rsa.PublicKey), nil
-	}
-
-	switch pub := pub.(type) {
-	case *rsa.PublicKey:
-		return pub, nil
-	default:
-		return nil, errors.New("key type is not RSA")
-	}
-}
-
-// LoadPrivateKey загружает приватный ключ из файла
-func LoadPrivateKey(path string) (*rsa.PrivateKey, error) {
-	keyBytes, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read private key file: %w", err)
-	}
-
-	block, _ := pem.Decode(keyBytes)
-	if block == nil {
-		return nil, errors.New("failed to decode PEM block containing private key")
-	}
-
-	// Пробуем распарсить как PKCS1
-	privateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
-	if err == nil {
-		return privateKey, nil
-	}
-
-	// Пробуем распарсить как PKCS8
-	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse private key: %w", err)
-	}
-
-	switch key := key.(type) {
-	case *rsa.PrivateKey:
-		return key, nil
-	default:
-		return nil, errors.New("key type is not RSA")
-	}
-}
-
-// EncryptWithPublicKey шифрует данные с помощью публичного ключа
-func EncryptWithPublicKey(msg []byte, pub *rsa.PublicKey) ([]byte, error) {
-	// Используем SHA256 для OAEP
-	hash := sha256.New()
-
-	// RSA может зашифровать только данные, размер которых меньше модуля ключа
-	// Для больших данных нужно использовать гибридное шифрование,
-	// но для наших метрик небольшого размера это подходит
-	encryptedBytes, err := rsa.EncryptOAEP(hash, rand.Reader, pub, msg, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt data: %w", err)
-	}
-	return encryptedBytes, nil
-}
-
-// DecryptWithPrivateKey расшифровывает данные с помощью приватного ключа
-func DecryptWithPrivateKey(ciphertext []byte, priv *rsa.PrivateKey) ([]byte, error) {
-	// Используем SHA256 для OAEP
-	hash := sha256.New()
-
-	decryptedBytes, err := rsa.DecryptOAEP(hash, rand.Reader, priv, ciphertext, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt data: %w", err)
-	}
-	return decryptedBytes, nil
-}
-
-// GenerateKeyPair генерирует пару RSA ключей и сохраняет в файлы
+// GenerateKeyPair генерирует пару RSA ключей и сохраняет их в файлы
 func GenerateKeyPair(privateKeyPath, publicKeyPath string, bits int) error {
 	// Генерируем приватный ключ
 	privateKey, err := rsa.GenerateKey(rand.Reader, bits)
@@ -116,11 +37,12 @@ func GenerateKeyPair(privateKeyPath, publicKeyPath string, bits int) error {
 	}
 	defer privateFile.Close()
 
-	privateKeyPEM := &pem.Block{
+	privateKeyBytes := x509.MarshalPKCS1PrivateKey(privateKey)
+	privateBlock := &pem.Block{
 		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
+		Bytes: privateKeyBytes,
 	}
-	if err := pem.Encode(privateFile, privateKeyPEM); err != nil {
+	if err := pem.Encode(privateFile, privateBlock); err != nil {
 		return fmt.Errorf("failed to write private key: %w", err)
 	}
 
@@ -135,14 +57,182 @@ func GenerateKeyPair(privateKeyPath, publicKeyPath string, bits int) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal public key: %w", err)
 	}
-
-	publicKeyPEM := &pem.Block{
+	publicBlock := &pem.Block{
 		Type:  "PUBLIC KEY",
 		Bytes: publicKeyBytes,
 	}
-	if err := pem.Encode(publicFile, publicKeyPEM); err != nil {
+	if err := pem.Encode(publicFile, publicBlock); err != nil {
 		return fmt.Errorf("failed to write public key: %w", err)
 	}
 
 	return nil
+}
+
+// LoadPrivateKey загружает приватный ключ из файла
+func LoadPrivateKey(path string) (*rsa.PrivateKey, error) {
+	keyBytes, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read private key file: %w", err)
+	}
+
+	block, _ := pem.Decode(keyBytes)
+	if block == nil {
+		return nil, fmt.Errorf("failed to decode PEM block")
+	}
+
+	privateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	if err != nil {
+		// Пробуем PKCS8
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse private key: %w", err)
+		}
+		var ok bool
+		privateKey, ok = key.(*rsa.PrivateKey)
+		if !ok {
+			return nil, fmt.Errorf("key is not RSA private key")
+		}
+	}
+
+	return privateKey, nil
+}
+
+// LoadPublicKey загружает публичный ключ из файла
+func LoadPublicKey(path string) (*rsa.PublicKey, error) {
+	keyBytes, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read public key file: %w", err)
+	}
+
+	block, _ := pem.Decode(keyBytes)
+	if block == nil {
+		return nil, fmt.Errorf("failed to decode PEM block")
+	}
+
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse public key: %w", err)
+	}
+
+	publicKey, ok := pub.(*rsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("key is not RSA public key")
+	}
+
+	return publicKey, nil
+}
+
+// EncryptWithPublicKey шифрует данные с использованием RSA (только для малых данных)
+// Внимание: этот метод имеет ограничение на размер данных!
+// Для больших данных используйте EncryptWithHybrid
+func EncryptWithPublicKey(msg []byte, pubKey *rsa.PublicKey) ([]byte, error) {
+	return rsa.EncryptOAEP(sha256.New(), rand.Reader, pubKey, msg, nil)
+}
+
+// DecryptWithPrivateKey расшифровывает данные с использованием RSA
+func DecryptWithPrivateKey(ciphertext []byte, privKey *rsa.PrivateKey) ([]byte, error) {
+	return rsa.DecryptOAEP(sha256.New(), rand.Reader, privKey, ciphertext, nil)
+}
+
+// EncryptWithHybrid шифрует данные с использованием гибридной схемы:
+// 1. Генерируется случайный AES-ключ
+// 2. Данные шифруются AES-GCM
+// 3. AES-ключ шифруется RSA-OAEP
+// Формат: [длина зашифрованного ключа:4][зашифрованный ключ][nonce:12][зашифрованные данные]
+func EncryptWithHybrid(plaintext []byte, pubKey *rsa.PublicKey) ([]byte, error) {
+	// 1. Генерируем случайный AES-ключ
+	aesKey := make([]byte, AESKeySize)
+	if _, err := io.ReadFull(rand.Reader, aesKey); err != nil {
+		return nil, fmt.Errorf("failed to generate AES key: %w", err)
+	}
+
+	// 2. Шифруем AES-ключ RSA
+	encryptedKey, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, pubKey, aesKey, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt AES key: %w", err)
+	}
+
+	// 3. Шифруем данные AES-GCM
+	block, err := aes.NewCipher(aesKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create AES cipher: %w", err)
+	}
+
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GCM: %w", err)
+	}
+
+	// Генерируем nonce
+	nonce := make([]byte, NonceSize)
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, fmt.Errorf("failed to generate nonce: %w", err)
+	}
+
+	// Шифруем данные
+	encryptedData := aesGCM.Seal(nil, nonce, plaintext, nil)
+
+	// 4. Собираем результат: [длина ключа:4][ключ][nonce:12][данные]
+	result := make([]byte, 4+len(encryptedKey)+NonceSize+len(encryptedData))
+
+	// Записываем длину зашифрованного ключа
+	binary.BigEndian.PutUint32(result[0:4], uint32(len(encryptedKey)))
+
+	// Записываем зашифрованный ключ
+	copy(result[4:4+len(encryptedKey)], encryptedKey)
+
+	// Записываем nonce
+	copy(result[4+len(encryptedKey):4+len(encryptedKey)+NonceSize], nonce)
+
+	// Записываем зашифрованные данные
+	copy(result[4+len(encryptedKey)+NonceSize:], encryptedData)
+
+	return result, nil
+}
+
+// DecryptWithHybrid расшифровывает данные, зашифрованные гибридной схемой
+func DecryptWithHybrid(ciphertext []byte, privKey *rsa.PrivateKey) ([]byte, error) {
+	if len(ciphertext) < 4 {
+		return nil, fmt.Errorf("ciphertext too short")
+	}
+
+	// 1. Читаем длину зашифрованного ключа
+	keyLen := binary.BigEndian.Uint32(ciphertext[0:4])
+
+	if len(ciphertext) < int(4+keyLen+NonceSize) {
+		return nil, fmt.Errorf("ciphertext too short for key and nonce")
+	}
+
+	// 2. Извлекаем зашифрованный ключ
+	encryptedKey := ciphertext[4 : 4+keyLen]
+
+	// 3. Извлекаем nonce
+	nonce := ciphertext[4+keyLen : 4+keyLen+NonceSize]
+
+	// 4. Извлекаем зашифрованные данные
+	encryptedData := ciphertext[4+keyLen+NonceSize:]
+
+	// 5. Расшифровываем AES-ключ RSA
+	aesKey, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, privKey, encryptedKey, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt AES key: %w", err)
+	}
+
+	// 6. Расшифровываем данные AES
+	block, err := aes.NewCipher(aesKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create AES cipher: %w", err)
+	}
+
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GCM: %w", err)
+	}
+
+	plaintext, err := aesGCM.Open(nil, nonce, encryptedData, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt data: %w", err)
+	}
+
+	return plaintext, nil
 }

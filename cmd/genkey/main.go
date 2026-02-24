@@ -10,22 +10,20 @@ import (
 
 func main() {
 	var (
-		privateKeyPath string
-		publicKeyPath  string
-		bits           int
+		privateKeyPath = flag.String("private", "private.key", "Path to save private key")
+		publicKeyPath  = flag.String("public", "public.key", "Path to save public key")
+		bits           = flag.Int("bits", 2048, "Key size in bits")
 	)
-
-	flag.StringVar(&privateKeyPath, "private", "private.pem", "path to save private key")
-	flag.StringVar(&publicKeyPath, "public", "public.pem", "path to save public key")
-	flag.IntVar(&bits, "bits", 4096, "key size in bits")
 	flag.Parse()
 
-	fmt.Printf("Generating RSA key pair (%d bits)...\n", bits)
+	fmt.Println("Generating RSA key pair...")
+	fmt.Printf("Private key: %s\n", *privateKeyPath)
+	fmt.Printf("Public key: %s\n", *publicKeyPath)
+	fmt.Printf("Key size: %d bits\n", *bits)
 
-	if err := crypto.GenerateKeyPair(privateKeyPath, publicKeyPath, bits); err != nil {
-		log.Fatalf("Failed to generate keys: %v", err)
+	if err := crypto.GenerateKeyPair(*privateKeyPath, *publicKeyPath, *bits); err != nil {
+		log.Fatalf("Failed to generate key pair: %v", err)
 	}
 
-	fmt.Printf("Private key saved to: %s\n", privateKeyPath)
-	fmt.Printf("Public key saved to: %s\n", publicKeyPath)
+	fmt.Println("Key pair generated successfully!")
 }

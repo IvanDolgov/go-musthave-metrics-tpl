@@ -59,7 +59,7 @@ func DecryptionMiddleware(privateKeyPath string) func(next http.Handler) http.Ha
 			}
 
 			privKey := privateKey.(*rsa.PrivateKey)
-			decryptedData, err := crypto.DecryptWithPrivateKey(dataToDecrypt, privKey)
+			decryptedData, err := crypto.DecryptWithHybrid(dataToDecrypt, privKey)
 			if err != nil {
 				logger.Log.Error("Failed to decrypt request body", zap.Error(err))
 				http.Error(w, "Decryption failed", http.StatusBadRequest)

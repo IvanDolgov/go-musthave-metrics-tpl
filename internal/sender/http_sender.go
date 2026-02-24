@@ -157,7 +157,7 @@ func (s *HTTPMetricsSender) sendMetricsWithContext(ctx context.Context, metrics 
 	encryptionEnabled := false
 	if s.publicKey != nil {
 		pubKey := s.publicKey.(*rsa.PublicKey)
-		encryptedData, err := crypto.EncryptWithPublicKey(jsonData, pubKey)
+		encryptedData, err := crypto.EncryptWithHybrid(jsonData, pubKey)
 		if err != nil {
 			return fmt.Errorf("encryption error: %w", err)
 		}

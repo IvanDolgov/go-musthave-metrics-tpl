@@ -1,22 +1,19 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
-	"strings"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/agent"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/buildinfo"
-	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/compress"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/config"
-	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/hash"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/sender"
 	"go.uber.org/zap"
 )
 
@@ -27,95 +24,49 @@ var (
 	buildCommit  string
 )
 
-// HTTPMetricsSender реализация отправки метрик по HTTP
-type HTTPMetricsSender struct {
-	config models.Config
-}
-
-// SendMetricsBatch отправляет батч метрик на сервер
-func (s *HTTPMetricsSender) SendMetricsBatch(ctx context.Context, metrics []models.Metrics) error {
-	startTime := time.Now()
-	endpoint := "http://" + buildServerAddress(s.config.Server, s.config.Port) + "/updates/"
-
-	jsonData, err := json.Marshal(metrics)
-	if err != nil {
-		logger.Log.Error("Failed to marshal metrics to JSON", zap.Error(err))
-		return fmt.Errorf("error encoding JSON: %w", err)
-	}
-
-	hashValue := hash.ComputeHMACSHA256(jsonData, s.config.Key)
-
-	compressedData, err := compress.GzipCompress(jsonData)
-	if err != nil {
-		logger.Log.Error("Failed to compress metrics data", zap.Error(err))
-		return fmt.Errorf("gzip compress error: %w", err)
-	}
-
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(compressedData))
-	if err != nil {
-		logger.Log.Error("Failed to create HTTP request", zap.Error(err))
-		return fmt.Errorf("error creating request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Content-Encoding", "gzip")
-	req.Header.Set("Accept-Encoding", "gzip")
-
-	if hashValue != "" {
-		req.Header.Set("HashSHA256", hashValue)
-	}
-
-	response, err := client.Do(req)
-	if err != nil {
-		logger.Log.Error("Error sending metrics batch",
-			zap.String("endpoint", endpoint),
-			zap.Error(err),
-		)
-		return fmt.Errorf("error sending metrics batch: %w", err)
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusOK {
-		err := fmt.Errorf("server returned non-OK status: %d", response.StatusCode)
-		logger.Log.Error("Server returned error",
-			zap.String("endpoint", endpoint),
-			zap.Int("status_code", response.StatusCode),
-		)
-		return err
-	}
-
-	duration := time.Since(startTime)
-	logger.Log.Info("Successfully sent metrics batch",
-		zap.Int("metrics_count", len(metrics)),
-		zap.Duration("duration", duration),
-	)
-
-	return nil
-}
-
-func buildServerAddress(server, port string) string {
-	if strings.TrimSpace(server) == "" {
-		return ":" + port
-	}
-	return server + ":" + port
-}
-
 func run(ctx context.Context, cfg models.Config) error {
 	// Вывод информации о сборке
 	buildinfo.Print()
 
-	sender := &HTTPMetricsSender{config: cfg}
+	sender, err := sender.NewHTTPMetricsSender(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to create metrics sender: %w", err)
+	}
 
+	// Запускаем обработчик отправки
+	sender.Start()
+	defer sender.Stop()
+
+	// Создаем агента
 	metricsAgent := agent.NewMetricsAgent(cfg, sender)
 
+	// Запускаем агента
 	metricsAgent.Start()
 	defer metricsAgent.Stop()
 
+	// Ожидаем завершения по сигналу
 	<-ctx.Done()
+	logger.Log.Info("Context cancelled, initiating graceful shutdown...")
+
+	// Даем время на завершение текущих операций (максимум 30 секунд)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Ожидаем завершения всех горутин
+	done := make(chan struct{})
+	go func() {
+		metricsAgent.Wait()
+		sender.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		logger.Log.Info("All goroutines finished successfully")
+	case <-shutdownCtx.Done():
+		logger.Log.Warn("Shutdown timeout exceeded, some goroutines may not have finished")
+	}
+
 	return nil
 }
 
@@ -130,13 +81,26 @@ func main() {
 	}
 	defer logger.Log.Sync()
 
-	// Создаем корневой контекст
+	// Создаем контекст с возможностью отмены
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Канал для сигналов ОС
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
+
+	// Запускаем горутину для обработки сигналов
+	go func() {
+		sig := <-sigChan
+		logger.Log.Info("Received shutdown signal", zap.String("signal", sig.String()))
+		cancel()
+	}()
 
 	// Запускаем приложение с контекстом
 	if err := run(ctx, cfg); err != nil {
 		logger.Log.Error("Application error", zap.Error(err))
 		os.Exit(1)
 	}
+
+	logger.Log.Info("Agent shutdown complete")
 }

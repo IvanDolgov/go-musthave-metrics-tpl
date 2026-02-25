@@ -21,7 +21,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 
-	_ "net/http/pprof" // профилирование
+	_ "net/http/pprof"
 )
 
 // Глобальные переменные для версии сборки
@@ -46,15 +46,10 @@ func run(cfg models.Config) error {
 	ctx := context.Background()
 
 	// ВЫБОР ХРАНИЛИЩА ПО ПРИОРИТЕТУ:
-	// 1. PostgreSQL (если указан DSN)
-	// 2. File storage (если указан путь к файлу)
-	// 3. In-memory storage (по умолчанию)
-
 	if cfg.DatabaseDSN != "" {
 		logger.Log.Info("Using PostgreSQL storage", zap.String("dsn", cfg.DatabaseDSN))
 		pgStorage, err := postgres.NewPostgresStorage(ctx, cfg.DatabaseDSN)
 		if err != nil {
-			// ВОЗВРАЩАЕМ ОШИБКУ НЕМЕДЛЕННО
 			return fmt.Errorf("failed to initialize PostgreSQL storage: %w", err)
 		}
 		store = pgStorage
@@ -62,12 +57,10 @@ func run(cfg models.Config) error {
 		defer pgStorage.Close()
 	}
 
-	// Если PostgreSQL не инициализирован, проверяем file storage
 	if store == nil && cfg.FileStoragePath != "" {
 		logger.Log.Info("Using file storage", zap.String("path", cfg.FileStoragePath))
 		fileStorage := storage.NewMemStorage()
 
-		// Загружаем метрики из файла при старте
 		if cfg.Restore {
 			if err := fileStorage.LoadFromFile(ctx, cfg.FileStoragePath); err != nil {
 				logger.Log.Warn("Failed to load metrics from file",
@@ -81,74 +74,60 @@ func run(cfg models.Config) error {
 		store = fileStorage
 	}
 
-	// Если ни PostgreSQL, ни file storage не указаны - используем memory storage
 	if store == nil {
 		logger.Log.Info("Using in-memory storage (no database or file storage configured)")
 		store = storage.NewMemStorage()
 	}
 
-	// Регистрируем файлового наблюдателя, если указан путь
 	if cfg.AuditFile != "" {
 		fileObserver := audit.NewFileObserver(cfg.AuditFile)
 		auditSubject.Register(fileObserver)
 		logger.Log.Info("File audit enabled", zap.String("file", cfg.AuditFile))
 	}
 
-	// Регистрируем удаленного наблюдателя, если указан URL
 	if cfg.AuditURL != "" {
 		remoteObserver := audit.NewRemoteObserver(cfg.AuditURL)
 		auditSubject.Register(remoteObserver)
 		logger.Log.Info("Remote audit enabled", zap.String("url", cfg.AuditURL))
 	}
 
-	// создаем строку с сервером
 	fullPathServer := buildServerAddress(cfg.Server, cfg.Port)
 
 	// создаем роутер
 	router := chi.NewRouter()
 
-	// Middleware
+	// Middleware (порядок важен!)
 	router.Use(middleware.WithLogging)
 	router.Use(middleware.WithGzip)
 
-	// Middleware для проверки хеша ДО обработки тела запроса
+	// Используем middleware из internal/middleware
+	router.Use(middleware.DecryptionMiddleware(cfg.CryptoKey))
+
 	router.Use(middleware.HashValidation(cfg.Key))
-
-	// Middleware для добавления хеша в исходящие ответы
 	router.Use(middleware.HashResponse(cfg.Key))
-
-	// Middleware для аудита
 	router.Use(middleware.WithAudit(auditSubject))
 
-	// Middleware для синхронного сохранения (только для file storage)
 	if cfg.StoreInterval == 0 {
 		if memStorage, ok := store.(*storage.MemStorage); ok && cfg.FileStoragePath != "" {
 			router.Use(middleware.WithSyncSave(memStorage, cfg.FileStoragePath))
 		}
 	}
 
-	// Ручки для метрик
+	// Ручки для метрик (эти функции должны быть определены в пакете handlers)
 	router.Get(`/`, summaryMetrics(store))
 	router.Post("/update/{type_metric}//{value_metric}", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Metric name cannot be empty", http.StatusNotFound)
 	})
 	router.Post(`/update/{type_metric}/{metric}/{value_metric}`, getMetrics(store))
 	router.Post(`/update/{type_metric}/{metric}/{value_metric}/`, getMetrics(store))
-
-	// НОВЫЕ ХЕНДЛЕРЫ ДЛЯ БАТЧЕВОГО ОБНОВЛЕНИЯ
 	router.Post(`/updates`, updateMetricsBatch(store))
 	router.Post(`/updates/`, updateMetricsBatch(store))
-
 	router.Post(`/update`, getJSONMetric(store))
 	router.Post(`/update/`, getJSONMetric(store))
-
 	router.Post(`/value`, sendJSONMetric(store))
 	router.Post(`/value/`, sendJSONMetric(store))
-
 	router.Get(`/value/{type_metric}/{metric}`, sendMetrics(store))
 	router.Get(`/value/{type_metric}/{metric}/`, sendMetrics(store))
-
-	// Хендлер проверки подключения к БД
 	router.Get(`/ping`, checkConnectDatabase(dbStorage))
 	router.Get(`/ping/`, checkConnectDatabase(dbStorage))
 
@@ -182,6 +161,7 @@ func run(cfg models.Config) error {
 			zap.String("file_storage_path", cfg.FileStoragePath),
 			zap.Bool("restore", cfg.Restore),
 			zap.Bool("database_enabled", dbStorage != nil),
+			zap.Bool("encryption_enabled", cfg.CryptoKey != ""),
 		)
 
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -197,57 +177,63 @@ func run(cfg models.Config) error {
 				ticker := time.NewTicker(time.Duration(cfg.StoreInterval) * time.Second)
 				defer ticker.Stop()
 
-				for range ticker.C {
-					if err := memStorage.SaveToFile(ctx, cfg.FileStoragePath); err != nil {
-						logger.Log.Error("Failed to save metrics to file",
-							zap.String("file", cfg.FileStoragePath),
-							zap.Error(err),
-						)
-					} else {
-						logger.Log.Debug("Metrics saved to file",
-							zap.String("file", cfg.FileStoragePath),
-						)
+				for {
+					select {
+					case <-ticker.C:
+						if err := memStorage.SaveToFile(ctx, cfg.FileStoragePath); err != nil {
+							logger.Log.Error("Failed to save metrics to file",
+								zap.String("file", cfg.FileStoragePath),
+								zap.Error(err),
+							)
+						} else {
+							logger.Log.Debug("Metrics saved to file",
+								zap.String("file", cfg.FileStoragePath),
+							)
+						}
+					case <-ctx.Done():
+						return
 					}
 				}
 			}()
 		}
 	}
 
-	// Ожидаем сигналы завершения
+	// Канал для сигналов ОС
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
+	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
 
 	select {
 	case sig := <-sigChan:
-		logger.Log.Info("Received signal, shutting down gracefully",
+		logger.Log.Info("Received signal, initiating graceful shutdown",
 			zap.String("signal", sig.String()))
 
-		// Сохраняем метрики перед завершением (только для file storage)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer shutdownCancel()
+
+		logger.Log.Info("Shutting down HTTP server...")
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			logger.Log.Error("HTTP server shutdown error", zap.Error(err))
+		}
+
 		if memStorage, ok := store.(*storage.MemStorage); ok && cfg.FileStoragePath != "" {
 			logger.Log.Info("Saving metrics before shutdown")
-			if err := memStorage.SaveToFile(ctx, cfg.FileStoragePath); err != nil {
+			saveCtx, saveCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer saveCancel()
+
+			if err := memStorage.SaveToFile(saveCtx, cfg.FileStoragePath); err != nil {
 				logger.Log.Error("Failed to save metrics before shutdown", zap.Error(err))
 			} else {
 				logger.Log.Info("Metrics saved successfully before shutdown")
 			}
 		}
 
+		logger.Log.Info("Server stopped gracefully")
+
 	case err := <-serverErr:
 		logger.Log.Error("Server error", zap.Error(err))
 		return err
 	}
 
-	// Graceful shutdown
-	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	logger.Log.Info("Shutting down server...")
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		logger.Log.Error("Server shutdown error", zap.Error(err))
-		return err
-	}
-
-	logger.Log.Info("Server stopped gracefully")
 	return nil
 }
 
@@ -261,7 +247,7 @@ func main() {
 	defer logger.Log.Sync()
 
 	if err := run(cfg); err != nil {
-		logger.Log.Info("Application error", zap.Error(err))
+		logger.Log.Error("Application error", zap.Error(err))
 		fmt.Fprintf(os.Stderr, "Application error: %v\n", err)
 		os.Exit(1)
 	}

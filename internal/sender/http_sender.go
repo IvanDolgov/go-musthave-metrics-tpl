@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -28,6 +29,8 @@ type HTTPMetricsSender struct {
 	wg          sync.WaitGroup
 	shutdown    chan struct{}
 	metricsChan chan []models.Metrics
+	localIP     string    // поле для хранения локального IP
+	ipOnce      sync.Once // поле для однократной инициализации IP
 }
 
 // NewHTTPMetricsSender создает новый экземпляр HTTPMetricsSender
@@ -49,6 +52,93 @@ func NewHTTPMetricsSender(cfg models.Config) (*HTTPMetricsSender, error) {
 	}
 
 	return sender, nil
+}
+
+// initLocalIP инициализирует локальный IP адрес
+func (s *HTTPMetricsSender) initLocalIP() {
+	s.ipOnce.Do(func() {
+		ip, err := getLocalIP()
+		if err != nil {
+			logger.Log.Warn("Failed to get local IP", zap.Error(err))
+			s.localIP = ""
+		} else {
+			s.localIP = ip
+			logger.Log.Debug("Local IP detected", zap.String("ip", s.localIP))
+		}
+	})
+}
+
+// sendMetricsWithContext отправляет метрики на сервер с заданным контекстом
+func (s *HTTPMetricsSender) sendMetricsWithContext(ctx context.Context, metrics []models.Metrics) error {
+	startTime := time.Now()
+	endpoint := "http://" + buildServerAddress(s.config.Server, s.config.Port) + "/updates/"
+
+	jsonData, err := json.Marshal(metrics)
+	if err != nil {
+		return fmt.Errorf("error encoding JSON: %w", err)
+	}
+
+	dataToSend := jsonData
+	encryptionEnabled := false
+	if s.publicKey != nil {
+		pubKey := s.publicKey.(*rsa.PublicKey)
+		encryptedData, err := crypto.EncryptWithHybrid(jsonData, pubKey)
+		if err != nil {
+			return fmt.Errorf("encryption error: %w", err)
+		}
+		dataToSend = encryptedData
+		encryptionEnabled = true
+	}
+
+	hashValue := hash.ComputeHMACSHA256(dataToSend, s.config.Key)
+
+	compressedData, err := compress.GzipCompress(dataToSend)
+	if err != nil {
+		return fmt.Errorf("gzip compress error: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(compressedData))
+	if err != nil {
+		return fmt.Errorf("error creating request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("Accept-Encoding", "gzip")
+
+	// Добавляем заголовок X-Real-IP с локальным IP агента
+	s.initLocalIP()
+	if s.localIP != "" {
+		req.Header.Set("X-Real-IP", s.localIP)
+	}
+
+	if encryptionEnabled {
+		req.Header.Set("X-Encrypted", "true")
+	}
+
+	if hashValue != "" {
+		req.Header.Set("HashSHA256", hashValue)
+	}
+
+	response, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("error sending metrics batch: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("server returned non-OK status: %d", response.StatusCode)
+	}
+
+	duration := time.Since(startTime)
+	logger.Log.Debug("Successfully sent metrics batch",
+		zap.Int("metrics_count", len(metrics)),
+		zap.Duration("duration", duration),
+		zap.Bool("encrypted", encryptionEnabled),
+		zap.String("local_ip", s.localIP),
+	)
+
+	return nil
 }
 
 // Start запускает обработчик отправки метрик
@@ -143,75 +233,27 @@ func (s *HTTPMetricsSender) sendMetrics(metrics []models.Metrics) error {
 	return s.sendMetricsWithContext(ctx, metrics)
 }
 
-// sendMetricsWithContext отправляет метрики на сервер с заданным контекстом
-func (s *HTTPMetricsSender) sendMetricsWithContext(ctx context.Context, metrics []models.Metrics) error {
-	startTime := time.Now()
-	endpoint := "http://" + buildServerAddress(s.config.Server, s.config.Port) + "/updates/"
-
-	jsonData, err := json.Marshal(metrics)
-	if err != nil {
-		return fmt.Errorf("error encoding JSON: %w", err)
-	}
-
-	dataToSend := jsonData
-	encryptionEnabled := false
-	if s.publicKey != nil {
-		pubKey := s.publicKey.(*rsa.PublicKey)
-		encryptedData, err := crypto.EncryptWithHybrid(jsonData, pubKey)
-		if err != nil {
-			return fmt.Errorf("encryption error: %w", err)
-		}
-		dataToSend = encryptedData
-		encryptionEnabled = true
-	}
-
-	hashValue := hash.ComputeHMACSHA256(dataToSend, s.config.Key)
-
-	compressedData, err := compress.GzipCompress(dataToSend)
-	if err != nil {
-		return fmt.Errorf("gzip compress error: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(compressedData))
-	if err != nil {
-		return fmt.Errorf("error creating request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Content-Encoding", "gzip")
-	req.Header.Set("Accept-Encoding", "gzip")
-
-	if encryptionEnabled {
-		req.Header.Set("X-Encrypted", "true")
-	}
-
-	if hashValue != "" {
-		req.Header.Set("HashSHA256", hashValue)
-	}
-
-	response, err := s.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("error sending metrics batch: %w", err)
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("server returned non-OK status: %d", response.StatusCode)
-	}
-
-	duration := time.Since(startTime)
-	logger.Log.Debug("Successfully sent metrics batch",
-		zap.Int("metrics_count", len(metrics)),
-		zap.Duration("duration", duration),
-		zap.Bool("encrypted", encryptionEnabled),
-	)
-
-	return nil
-}
-
 func buildServerAddress(server, port string) string {
 	if strings.TrimSpace(server) == "" {
 		return ":" + port
 	}
 	return server + ":" + port
+}
+
+// getLocalIP возвращает локальный IP адрес агента
+func getLocalIP() (string, error) {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "", err
+	}
+
+	for _, addr := range addrs {
+		// Проверяем, что это IP адрес и не loopback
+		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if ipnet.IP.To4() != nil {
+				return ipnet.IP.String(), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("no suitable IP address found")
 }

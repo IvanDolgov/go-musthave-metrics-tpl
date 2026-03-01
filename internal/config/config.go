@@ -24,6 +24,7 @@ func ParseServerFlags() models.Config {
 		auditFile       string
 		auditURL        string
 		configFile      string
+		trustedSubnet   string
 	)
 
 	// Регистрируем флаги для сервера
@@ -38,6 +39,7 @@ func ParseServerFlags() models.Config {
 	flag.StringVar(&auditURL, "audit-url", "", "URL for remote audit logging")
 	flag.StringVar(&configFile, "c", "", "path to config file")
 	flag.StringVar(&configFile, "config", "", "path to config file")
+	flag.StringVar(&trustedSubnet, "t", "", "trusted subnet in CIDR notation")
 
 	flag.Parse()
 
@@ -96,6 +98,11 @@ func ParseServerFlags() models.Config {
 				auditURL = str
 			}
 		}
+		if val, ok := jsonConfig["trusted_subnet"]; ok {
+			if str := parseString(val, ""); str != "" && trustedSubnet == "" {
+				trustedSubnet = str
+			}
+		}
 	}
 
 	// Применяем приоритеты параметров (env vars имеют приоритет над флагами и JSON)
@@ -131,6 +138,10 @@ func ParseServerFlags() models.Config {
 		auditURL = envAuditURL
 	}
 
+	if envTrustedSubnet := os.Getenv("TRUSTED_SUBNET"); envTrustedSubnet != "" {
+		trustedSubnet = envTrustedSubnet
+	}
+
 	// Парсим адрес на server и port
 	server, port := parseAddress(address)
 
@@ -146,6 +157,7 @@ func ParseServerFlags() models.Config {
 		CryptoKey:       cryptoKey,
 		AuditFile:       auditFile,
 		AuditURL:        auditURL,
+		TrustedSubnet:   trustedSubnet,
 	}
 }
 

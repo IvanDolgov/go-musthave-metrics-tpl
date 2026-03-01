@@ -100,6 +100,9 @@ func run(cfg models.Config) error {
 	router.Use(middleware.WithLogging)
 	router.Use(middleware.WithGzip)
 
+	// Добавляем проверку trusted subnet (должна быть до обработчиков, но после логирования)
+	router.Use(middleware.TrustedSubnetMiddleware(cfg.TrustedSubnet))
+
 	// Используем middleware из internal/middleware
 	router.Use(middleware.DecryptionMiddleware(cfg.CryptoKey))
 

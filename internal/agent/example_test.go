@@ -16,6 +16,10 @@ func (m *MockSender) SendMetricsBatch(ctx context.Context, metrics []models.Metr
 	return nil
 }
 
+func (m *MockSender) Start() {}
+func (m *MockSender) Stop()  {}
+func (m *MockSender) Wait()  {}
+
 // ExampleMetricsAgent демонстрирует создание и запуск агента метрик.
 func ExampleMetricsAgent() {
 	// Конфигурация агента

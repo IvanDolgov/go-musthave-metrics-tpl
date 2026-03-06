@@ -16,6 +16,7 @@ import (
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/logger"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/middleware"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/server"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/storage"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/storage/postgres"
 	"github.com/go-chi/chi/v5"
@@ -91,6 +92,52 @@ func run(cfg models.Config) error {
 		logger.Log.Info("Remote audit enabled", zap.String("url", cfg.AuditURL))
 	}
 
+	// Создаем канал для ошибок
+	errChan := make(chan error, 2)
+
+	// Запускаем HTTP сервер
+	go func() {
+		logger.Log.Info("Starting HTTP server", zap.String("address", cfg.Address))
+		if err := startHTTPServer(cfg, store, dbStorage, auditSubject); err != nil {
+			errChan <- fmt.Errorf("HTTP server error: %w", err)
+		}
+	}()
+
+	// Запускаем gRPC сервер (если USE_GRPC включен или просто всегда запускаем)
+	go func() {
+		grpcAddr := cfg.GRPCAddress
+		if grpcAddr == "" {
+			grpcAddr = ":3200"
+		}
+
+		logger.Log.Info("Starting gRPC server", zap.String("address", grpcAddr))
+		grpcServer, lis, err := server.StartGRPCServer(grpcAddr, store, cfg.TrustedSubnet)
+		if err != nil {
+			errChan <- fmt.Errorf("failed to start gRPC server: %w", err)
+			return
+		}
+
+		if err := grpcServer.Serve(lis); err != nil {
+			errChan <- fmt.Errorf("gRPC server error: %w", err)
+		}
+	}()
+
+	// Канал для сигналов ОС
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
+
+	select {
+	case sig := <-sigChan:
+		logger.Log.Info("Received signal, initiating graceful shutdown",
+			zap.String("signal", sig.String()))
+		return nil
+	case err := <-errChan:
+		return err
+	}
+}
+
+// startHTTPServer выносим в отдельную функцию для читаемости
+func startHTTPServer(cfg models.Config, store storage.Storage, dbStorage postgres.DatabaseStorage, auditSubject *audit.ConcreteSubject) error {
 	fullPathServer := buildServerAddress(cfg.Server, cfg.Port)
 
 	// создаем роутер
@@ -116,7 +163,7 @@ func run(cfg models.Config) error {
 		}
 	}
 
-	// Ручки для метрик (эти функции должны быть определены в пакете handlers)
+	// Ручки для метрик
 	router.Get(`/`, summaryMetrics(store))
 	router.Post("/update/{type_metric}//{value_metric}", func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Metric name cannot be empty", http.StatusNotFound)
@@ -146,33 +193,6 @@ func run(cfg models.Config) error {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	serverErr := make(chan error, 1)
-
-	// Запускаем сервер
-	go func() {
-		storageType := "memory"
-		if dbStorage != nil {
-			storageType = "postgres"
-		} else if cfg.FileStoragePath != "" {
-			storageType = "file"
-		}
-
-		logger.Log.Info("Starting server",
-			zap.String("address", fullPathServer),
-			zap.String("storage_type", storageType),
-			zap.Int64("store_interval", cfg.StoreInterval),
-			zap.String("file_storage_path", cfg.FileStoragePath),
-			zap.Bool("restore", cfg.Restore),
-			zap.Bool("database_enabled", dbStorage != nil),
-			zap.Bool("encryption_enabled", cfg.CryptoKey != ""),
-		)
-
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			serverErr <- err
-		}
-		close(serverErr)
-	}()
-
 	// Периодическое сохранение (только для file storage)
 	if cfg.StoreInterval > 0 && cfg.FileStoragePath != "" {
 		if memStorage, ok := store.(*storage.MemStorage); ok {
@@ -180,6 +200,7 @@ func run(cfg models.Config) error {
 				ticker := time.NewTicker(time.Duration(cfg.StoreInterval) * time.Second)
 				defer ticker.Stop()
 
+				ctx := context.Background()
 				for {
 					select {
 					case <-ticker.C:
@@ -187,10 +208,6 @@ func run(cfg models.Config) error {
 							logger.Log.Error("Failed to save metrics to file",
 								zap.String("file", cfg.FileStoragePath),
 								zap.Error(err),
-							)
-						} else {
-							logger.Log.Debug("Metrics saved to file",
-								zap.String("file", cfg.FileStoragePath),
 							)
 						}
 					case <-ctx.Done():
@@ -201,43 +218,7 @@ func run(cfg models.Config) error {
 		}
 	}
 
-	// Канал для сигналов ОС
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
-
-	select {
-	case sig := <-sigChan:
-		logger.Log.Info("Received signal, initiating graceful shutdown",
-			zap.String("signal", sig.String()))
-
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer shutdownCancel()
-
-		logger.Log.Info("Shutting down HTTP server...")
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			logger.Log.Error("HTTP server shutdown error", zap.Error(err))
-		}
-
-		if memStorage, ok := store.(*storage.MemStorage); ok && cfg.FileStoragePath != "" {
-			logger.Log.Info("Saving metrics before shutdown")
-			saveCtx, saveCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer saveCancel()
-
-			if err := memStorage.SaveToFile(saveCtx, cfg.FileStoragePath); err != nil {
-				logger.Log.Error("Failed to save metrics before shutdown", zap.Error(err))
-			} else {
-				logger.Log.Info("Metrics saved successfully before shutdown")
-			}
-		}
-
-		logger.Log.Info("Server stopped gracefully")
-
-	case err := <-serverErr:
-		logger.Log.Error("Server error", zap.Error(err))
-		return err
-	}
-
-	return nil
+	return server.ListenAndServe()
 }
 
 func main() {

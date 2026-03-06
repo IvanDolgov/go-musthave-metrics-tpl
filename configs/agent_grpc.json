@@ -1,0 +1,10 @@
+{
+  "address": "localhost:8080",
+  "grpc_address": "localhost:3200",
+  "use_grpc": true,
+  "poll_interval": "2s",
+  "report_interval": "10s",
+  "rate_limit": 5,
+  "crypto_key": "/path/to/public.key",
+  "key": "secret-key"
+}

@@ -1,0 +1,11 @@
+{
+  "address": "localhost:8080",
+  "grpc_address": ":3200",
+  "store_interval": 300,
+  "store_file": "/tmp/metrics.json",
+  "restore": true,
+  "database_dsn": "",
+  "trusted_subnet": "192.168.1.0/24",
+  "crypto_key": "/path/to/private.key",
+  "audit_file": "/tmp/audit.log"
+}

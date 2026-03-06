@@ -28,6 +28,10 @@ func NewMockMetricsSender(shouldFail bool) *MockMetricsSender {
 	}
 }
 
+func (m *MockMetricsSender) Start() {}
+func (m *MockMetricsSender) Stop()  {}
+func (m *MockMetricsSender) Wait()  {}
+
 func (m *MockMetricsSender) SendMetricsBatch(ctx context.Context, metrics []models.Metrics) error {
 	atomic.AddInt32(&m.sendCalled, 1)
 

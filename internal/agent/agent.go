@@ -34,6 +34,9 @@ type MetricsAgent struct {
 // MetricsSender определяет интерфейс для отправки метрик на сервер.
 type MetricsSender interface {
 	SendMetricsBatch(ctx context.Context, metrics []models.Metrics) error
+	Start()
+	Stop()
+	Wait()
 }
 
 // Pools для уменьшения аллокаций памяти.

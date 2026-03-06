@@ -28,17 +28,28 @@ func run(ctx context.Context, cfg models.Config) error {
 	// Вывод информации о сборке
 	buildinfo.Print()
 
-	sender, err := sender.NewHTTPMetricsSender(cfg)
+	var sdr agent.MetricsSender
+	var err error
+
+	// Выбираем тип отправителя в зависимости от конфигурации
+	if cfg.UseGRPC {
+		logger.Log.Info("Using gRPC sender", zap.String("address", cfg.GRPCAddress))
+		sdr, err = sender.NewGRPCMetricsSender(cfg)
+	} else {
+		logger.Log.Info("Using HTTP sender", zap.String("address", cfg.Address))
+		sdr, err = sender.NewHTTPMetricsSender(cfg)
+	}
+
 	if err != nil {
 		return fmt.Errorf("failed to create metrics sender: %w", err)
 	}
 
 	// Запускаем обработчик отправки
-	sender.Start()
-	defer sender.Stop()
+	sdr.Start()
+	defer sdr.Stop()
 
 	// Создаем агента
-	metricsAgent := agent.NewMetricsAgent(cfg, sender)
+	metricsAgent := agent.NewMetricsAgent(cfg, sdr)
 
 	// Запускаем агента
 	metricsAgent.Start()
@@ -56,7 +67,7 @@ func run(ctx context.Context, cfg models.Config) error {
 	done := make(chan struct{})
 	go func() {
 		metricsAgent.Wait()
-		sender.Wait()
+		sdr.Wait() // Здесь используем sdr.Wait(), а не sender.Wait
 		close(done)
 	}()
 

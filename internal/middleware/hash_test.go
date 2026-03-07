@@ -228,7 +228,7 @@ func TestHashResponseWriter(t *testing.T) {
 		mockWriter := httptest.NewRecorder()
 		hw := &hashResponseWriter{
 			ResponseWriter: mockWriter,
-			key:            "",
+			key:            "", // Пустой ключ
 		}
 
 		hw.WriteHeader(http.StatusOK)

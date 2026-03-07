@@ -177,13 +177,10 @@ func TestHashResponseWriter(t *testing.T) {
 		_, err := hw.Write(responseBody)
 		assert.NoError(t, err)
 
-		// Вызываем WriteHeader после Write
 		hw.WriteHeader(http.StatusCreated)
 
-		// Проверяем, что статус код установлен
 		assert.Equal(t, http.StatusCreated, mockWriter.Code)
 
-		// Проверяем, что хэш добавлен
 		hashHeader := mockWriter.Header().Get("HashSHA256")
 		assert.NotEmpty(t, hashHeader)
 	})
@@ -195,17 +192,14 @@ func TestHashResponseWriter(t *testing.T) {
 			key:            "test-key",
 		}
 
-		// Сначала устанавливаем заголовок
 		hw.WriteHeader(http.StatusCreated)
 
 		responseBody := []byte("test response")
 		_, err := hw.Write(responseBody)
 		assert.NoError(t, err)
 
-		// Проверяем статус код
 		assert.Equal(t, http.StatusCreated, mockWriter.Code)
 
-		// Хэш должен быть вычислен на основе записанных данных
 		hashHeader := mockWriter.Header().Get("HashSHA256")
 		assert.NotEmpty(t, hashHeader)
 
@@ -226,9 +220,10 @@ func TestHashResponseWriter(t *testing.T) {
 
 	t.Run("Empty key - no hash", func(t *testing.T) {
 		mockWriter := httptest.NewRecorder()
+		// Используем пустой ключ - это допустимо
 		hw := &hashResponseWriter{
 			ResponseWriter: mockWriter,
-			key:            "", // Пустой ключ
+			key:            "", // Пустой ключ - OK
 		}
 
 		hw.WriteHeader(http.StatusOK)
@@ -238,4 +233,23 @@ func TestHashResponseWriter(t *testing.T) {
 		hashHeader := mockWriter.Header().Get("HashSHA256")
 		assert.Empty(t, hashHeader)
 	})
+}
+
+// Добавляем тест для проверки что поле key не используется впустую
+func TestHashResponseWriterKeyUsage(t *testing.T) {
+	mockWriter := httptest.NewRecorder()
+	hw := &hashResponseWriter{
+		ResponseWriter: mockWriter,
+		key:            "test-key",
+	}
+
+	// Используем key в вычислении хэша
+	data := []byte("test data")
+	hw.Write(data)
+	hw.WriteHeader(http.StatusOK)
+
+	// Проверяем что хэш вычислен с использованием key
+	hashHeader := mockWriter.Header().Get("HashSHA256")
+	expectedHash := hash.ComputeHMACSHA256(data, "test-key")
+	assert.Equal(t, expectedHash, hashHeader)
 }

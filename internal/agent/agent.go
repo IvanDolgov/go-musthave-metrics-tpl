@@ -138,7 +138,16 @@ func (a *MetricsAgent) Stop() {
 	}
 
 	// Закрываем канал после небольшой задержки
-	close(a.metricsChan)
+	// Исправление: проверяем, не закрыт ли уже канал
+	select {
+	case _, ok := <-a.metricsChan:
+		if ok {
+			close(a.metricsChan)
+		}
+	default:
+		// Канал пуст, закрываем
+		close(a.metricsChan)
+	}
 
 	// Останавливаем жизненный цикл отправителя
 	if a.lifecycle != nil {
@@ -261,25 +270,7 @@ func (a *MetricsAgent) collectRuntimeMetrics() {
 			)
 
 			// Отправляем метрики в канал для обработки воркерами
-			select {
-			case a.metricsChan <- metrics:
-			case <-a.ctx.Done():
-				// Возвращаем метрики в pool
-				for i := range metrics {
-					metrics[i].Value = nil
-					metrics[i].Delta = nil
-				}
-				runtimeMetricsPool.Put(metrics)
-				return
-			default:
-				logger.Log.Warn("Metrics channel full, dropping batch")
-				// Если канал полный, возвращаем метрики в pool
-				for i := range metrics {
-					metrics[i].Value = nil
-					metrics[i].Delta = nil
-				}
-				runtimeMetricsPool.Put(metrics)
-			}
+			a.sendMetricsToChannel(metrics)
 
 		case <-a.ctx.Done():
 			logger.Log.Debug("Runtime metrics collector stopping")
@@ -316,30 +307,65 @@ func (a *MetricsAgent) collectGopsutilMetrics() {
 			)
 
 			// Отправляем метрики в канал для обработки воркерами
-			select {
-			case a.metricsChan <- metrics:
-			case <-a.ctx.Done():
-				// Возвращаем метрики в pool
-				for i := range metrics {
-					metrics[i].Value = nil
-					metrics[i].Delta = nil
-				}
-				metricsPool.Put(metrics[:0])
-				return
-			default:
-				logger.Log.Warn("Metrics channel full, dropping gopsutil batch")
-				// Возвращаем метрики в pool
-				for i := range metrics {
-					metrics[i].Value = nil
-					metrics[i].Delta = nil
-				}
-				metricsPool.Put(metrics[:0])
-			}
+			a.sendMetricsToChannel(metrics)
 
 		case <-a.ctx.Done():
 			logger.Log.Debug("Gopsutil metrics collector stopping")
 			return
 		}
+	}
+}
+
+// sendMetricsToChannel отправляет метрики в канал с защитой от закрытого канала
+func (a *MetricsAgent) sendMetricsToChannel(metrics []models.Metrics) {
+	// Проверяем, не закрыт ли канал
+	select {
+	case <-a.ctx.Done():
+		// Контекст отменен, возвращаем метрики в пул
+		a.returnMetricsToPool(metrics)
+		return
+	default:
+		// Продолжаем
+	}
+
+	// Пытаемся отправить с защитой от паники при закрытом канале
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Log.Error("Panic while sending to channel",
+				zap.Any("recover", r))
+			a.returnMetricsToPool(metrics)
+		}
+	}()
+
+	select {
+	case a.metricsChan <- metrics:
+		// Успешно отправили
+	case <-a.ctx.Done():
+		// Контекст отменен во время ожидания
+		a.returnMetricsToPool(metrics)
+	default:
+		logger.Log.Warn("Metrics channel full, dropping batch")
+		a.returnMetricsToPool(metrics)
+	}
+}
+
+// returnMetricsToPool возвращает метрики в пул
+func (a *MetricsAgent) returnMetricsToPool(metrics []models.Metrics) {
+	if len(metrics) == 0 {
+		return
+	}
+
+	// Очищаем ссылки для GC
+	for i := range metrics {
+		metrics[i].Value = nil
+		metrics[i].Delta = nil
+	}
+
+	// Возвращаем в соответствующий пул
+	if cap(metrics) >= 36 {
+		runtimeMetricsPool.Put(metrics)
+	} else {
+		metricsPool.Put(metrics[:0])
 	}
 }
 

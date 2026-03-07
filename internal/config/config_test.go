@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"flag"
 	"os"
 	"path/filepath"
 	"testing"
@@ -34,6 +35,16 @@ type testAgentJSONConfig struct {
 	RateLimit      *int64 `json:"rate_limit"`
 }
 
+// Вспомогательная функция для разбиения переменной окружения
+func splitEnv(env string) []string {
+	for i := 0; i < len(env); i++ {
+		if env[i] == '=' {
+			return []string{env[:i], env[i+1:]}
+		}
+	}
+	return []string{env}
+}
+
 func TestParseServerFlags(t *testing.T) {
 	// Сохраняем оригинальные аргументы командной строки и окружение
 	origArgs := os.Args
@@ -47,10 +58,12 @@ func TestParseServerFlags(t *testing.T) {
 				os.Setenv(parts[0], parts[1])
 			}
 		}
+		// Сбрасываем флаги после каждого теста
+		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 	}()
 
 	t.Run("default values", func(t *testing.T) {
-		// Очищаем все переменные окружения, которые могут повлиять на тест
+		// Очищаем все переменные окружения
 		os.Unsetenv("ADDRESS")
 		os.Unsetenv("STORE_INTERVAL")
 		os.Unsetenv("FILE_STORAGE_PATH")
@@ -99,7 +112,7 @@ func TestParseServerFlags(t *testing.T) {
 			"-a", "192.168.1.100:9090",
 			"-i", "60",
 			"-f", "/tmp/metrics.json",
-			"-r", "false",
+			"-r=false",
 			"-d", "postgres://localhost:5432/metrics",
 			"-k", "secret-key",
 			"-crypto-key", "/path/to/private.pem",
@@ -273,6 +286,8 @@ func TestParseAgentFlags(t *testing.T) {
 				os.Setenv(parts[0], parts[1])
 			}
 		}
+		// Сбрасываем флаги после каждого теста
+		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 	}()
 
 	t.Run("default values", func(t *testing.T) {
@@ -444,16 +459,6 @@ func TestParseAgentFlags(t *testing.T) {
 		assert.Equal(t, 15*time.Second, cfg.ReportInterval)
 		assert.Equal(t, int64(5), cfg.RateLimit)
 	})
-}
-
-// Вспомогательная функция для разбиения переменной окружения
-func splitEnv(env string) []string {
-	for i := 0; i < len(env); i++ {
-		if env[i] == '=' {
-			return []string{env[:i], env[i+1:]}
-		}
-	}
-	return []string{env}
 }
 
 func TestLoadJSONConfig(t *testing.T) {
@@ -939,9 +944,4 @@ func TestParseString(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
-}
-
-// Вспомогательная функция для создания указателя на bool
-func boolPtr(b bool) *bool {
-	return &b
 }

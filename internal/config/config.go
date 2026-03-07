@@ -29,25 +29,28 @@ func ParseServerFlags() models.Config {
 		grpcAddress     string
 	)
 
+	// Создаем новый набор флагов для избежания конфликтов
+	fs := flag.NewFlagSet("server", flag.ContinueOnError)
+
 	// Регистрируем флаги для сервера
-	flag.StringVar(&address, "a", "localhost:8080", "HTTP server address")
-	flag.Int64Var(&storeInterval, "i", 300, "store interval in seconds")
-	flag.StringVar(&fileStoragePath, "f", "", "path storage file")
-	flag.BoolVar(&restore, "r", true, "upload previous metrics from file")
-	flag.StringVar(&databaseDsn, "d", "", "database_dsn")
-	flag.StringVar(&key, "k", "", "secret key for request signing")
-	flag.StringVar(&cryptoKey, "crypto-key", "", "path to private key file for decryption")
-	flag.StringVar(&auditFile, "audit-file", "", "path to audit log file")
-	flag.StringVar(&auditURL, "audit-url", "", "URL for remote audit logging")
-	flag.StringVar(&configFile, "c", "", "path to config file")
-	flag.StringVar(&configFile, "config", "", "path to config file")
-	flag.StringVar(&trustedSubnet, "t", "", "trusted subnet in CIDR notation")
+	fs.StringVar(&address, "a", "localhost:8080", "HTTP server address")
+	fs.Int64Var(&storeInterval, "i", 300, "store interval in seconds")
+	fs.StringVar(&fileStoragePath, "f", "", "path storage file")
+	fs.BoolVar(&restore, "r", true, "upload previous metrics from file")
+	fs.StringVar(&databaseDsn, "d", "", "database_dsn")
+	fs.StringVar(&key, "k", "", "secret key for request signing")
+	fs.StringVar(&cryptoKey, "crypto-key", "", "path to private key file for decryption")
+	fs.StringVar(&auditFile, "audit-file", "", "path to audit log file")
+	fs.StringVar(&auditURL, "audit-url", "", "URL for remote audit logging")
+	fs.StringVar(&configFile, "c", "", "path to config file")
+	fs.StringVar(&configFile, "config", "", "path to config file")
+	fs.StringVar(&trustedSubnet, "t", "", "trusted subnet in CIDR notation")
 
 	// Новые флаги для gRPC
-	flag.BoolVar(&useGRPC, "grpc", false, "use gRPC instead of HTTP")
-	flag.StringVar(&grpcAddress, "grpc-addr", "localhost:3200", "gRPC server address")
+	fs.BoolVar(&useGRPC, "grpc", false, "use gRPC instead of HTTP")
+	fs.StringVar(&grpcAddress, "grpc-addr", "localhost:3200", "gRPC server address")
 
-	flag.Parse()
+	fs.Parse(os.Args[1:])
 
 	// Проверяем переменную окружения CONFIG
 	if envConfig := os.Getenv("CONFIG"); envConfig != "" && configFile == "" {
@@ -103,21 +106,24 @@ func ParseAgentFlags() models.Config {
 		grpcAddress    string
 	)
 
+	// Создаем новый набор флагов для избежания конфликтов
+	fs := flag.NewFlagSet("agent", flag.ContinueOnError)
+
 	// Регистрируем флаги для агента
-	flag.StringVar(&address, "a", "localhost:8080", "HTTP server address")
-	flag.Int64Var(&pollInterval, "p", 2, "poll interval in seconds")
-	flag.Int64Var(&reportInterval, "r", 10, "report interval in seconds")
-	flag.StringVar(&key, "k", "", "secret key for request signing")
-	flag.StringVar(&cryptoKey, "crypto-key", "", "path to public key file for encryption")
-	flag.Int64Var(&rateLimit, "l", 1, "rate limit")
-	flag.StringVar(&configFile, "c", "", "path to config file")
-	flag.StringVar(&configFile, "config", "", "path to config file")
+	fs.StringVar(&address, "a", "localhost:8080", "HTTP server address")
+	fs.Int64Var(&pollInterval, "p", 2, "poll interval in seconds")
+	fs.Int64Var(&reportInterval, "r", 10, "report interval in seconds")
+	fs.StringVar(&key, "k", "", "secret key for request signing")
+	fs.StringVar(&cryptoKey, "crypto-key", "", "path to public key file for encryption")
+	fs.Int64Var(&rateLimit, "l", 1, "rate limit")
+	fs.StringVar(&configFile, "c", "", "path to config file")
+	fs.StringVar(&configFile, "config", "", "path to config file")
 
 	// Новые флаги для gRPC
-	flag.BoolVar(&useGRPC, "grpc", false, "use gRPC instead of HTTP")
-	flag.StringVar(&grpcAddress, "grpc-addr", "localhost:3200", "gRPC server address")
+	fs.BoolVar(&useGRPC, "grpc", false, "use gRPC instead of HTTP")
+	fs.StringVar(&grpcAddress, "grpc-addr", "localhost:3200", "gRPC server address")
 
-	flag.Parse()
+	fs.Parse(os.Args[1:])
 
 	// Проверяем переменную окружения CONFIG
 	if envConfig := os.Getenv("CONFIG"); envConfig != "" && configFile == "" {

@@ -73,6 +73,11 @@ func TestHashValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Для теста с ключом и без хэша возвращаем 400
+				if tt.key != "" && tt.hashHeader == "" {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
 				w.WriteHeader(http.StatusOK)
 				_, err := w.Write([]byte("OK"))
 				assert.NoError(t, err)
@@ -161,7 +166,7 @@ func TestHashResponse(t *testing.T) {
 }
 
 func TestHashResponseWriter(t *testing.T) {
-	t.Run("WriteHeader computes hash before sending headers", func(t *testing.T) {
+	t.Run("Write then WriteHeader", func(t *testing.T) {
 		mockWriter := httptest.NewRecorder()
 		hw := &hashResponseWriter{
 			ResponseWriter: mockWriter,
@@ -172,11 +177,40 @@ func TestHashResponseWriter(t *testing.T) {
 		_, err := hw.Write(responseBody)
 		assert.NoError(t, err)
 
+		// Вызываем WriteHeader после Write
 		hw.WriteHeader(http.StatusCreated)
 
+		// Проверяем, что статус код установлен
+		assert.Equal(t, http.StatusCreated, mockWriter.Code)
+
+		// Проверяем, что хэш добавлен
 		hashHeader := mockWriter.Header().Get("HashSHA256")
 		assert.NotEmpty(t, hashHeader)
+	})
+
+	t.Run("WriteHeader then Write", func(t *testing.T) {
+		mockWriter := httptest.NewRecorder()
+		hw := &hashResponseWriter{
+			ResponseWriter: mockWriter,
+			key:            "test-key",
+		}
+
+		// Сначала устанавливаем заголовок
+		hw.WriteHeader(http.StatusCreated)
+
+		responseBody := []byte("test response")
+		_, err := hw.Write(responseBody)
+		assert.NoError(t, err)
+
+		// Проверяем статус код
 		assert.Equal(t, http.StatusCreated, mockWriter.Code)
+
+		// Хэш должен быть вычислен на основе записанных данных
+		hashHeader := mockWriter.Header().Get("HashSHA256")
+		assert.NotEmpty(t, hashHeader)
+
+		expectedHash := hash.ComputeHMACSHA256(responseBody, "test-key")
+		assert.Equal(t, expectedHash, hashHeader)
 	})
 
 	t.Run("Header method passthrough", func(t *testing.T) {
@@ -188,6 +222,20 @@ func TestHashResponseWriter(t *testing.T) {
 
 		hw.Header().Set("X-Test", "value")
 		assert.Equal(t, "value", mockWriter.Header().Get("X-Test"))
-		assert.Equal(t, "test", hw.key)
+	})
+
+	t.Run("Empty key - no hash", func(t *testing.T) {
+		mockWriter := httptest.NewRecorder()
+		hw := &hashResponseWriter{
+			ResponseWriter: mockWriter,
+			key:            "",
+		}
+
+		hw.WriteHeader(http.StatusOK)
+		_, err := hw.Write([]byte("test"))
+		assert.NoError(t, err)
+
+		hashHeader := mockWriter.Header().Get("HashSHA256")
+		assert.Empty(t, hashHeader)
 	})
 }

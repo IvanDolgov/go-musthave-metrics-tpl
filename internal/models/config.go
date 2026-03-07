@@ -18,4 +18,7 @@ type Config struct {
 	AuditFile       string // путь к файлу аудита
 	AuditURL        string // URL для отправки аудита
 	CryptoKey       string // путь к файлу с ключом (публичным для агента, приватным для сервера)
+	TrustedSubnet   string // доверенная подсеть в формате CIDR
+	UseGRPC         bool   // Использовать gRPC вместо HTTP
+	GRPCAddress     string // Адрес gRPC сервера
 }

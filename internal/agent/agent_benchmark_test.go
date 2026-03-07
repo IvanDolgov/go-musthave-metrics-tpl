@@ -2,99 +2,75 @@ package agent
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 )
 
-// mockSender для тестов
-type benchmarkMockSender struct{}
+// benchmarkMockSender - мок для бенчмарков
+type benchmarkMockSender struct {
+	mu        sync.Mutex
+	sentCount int
+}
 
 func (m *benchmarkMockSender) SendMetricsBatch(ctx context.Context, metrics []models.Metrics) error {
-	// Возвращаем метрики в pool если используется
-	if len(metrics) > 0 {
-		for i := range metrics {
-			metrics[i].Value = nil
-			metrics[i].Delta = nil
-		}
-		metricsPool.Put(metrics[:0])
-	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sentCount += len(metrics)
 	return nil
 }
 
-func BenchmarkGetRuntimeMetrics(b *testing.B) {
-	cfg := models.Config{
-		PollInterval:   2 * time.Second,
-		ReportInterval: 10 * time.Second,
-		RateLimit:      1,
-	}
+func (m *benchmarkMockSender) Start() {}
 
-	agent := NewMetricsAgent(cfg, &benchmarkMockSender{})
-	defer agent.cancel()
+func (m *benchmarkMockSender) Stop() {}
 
-	b.ResetTimer()
-	b.ReportAllocs()
+func (m *benchmarkMockSender) Wait() {}
 
-	for i := 0; i < b.N; i++ {
-		metrics := agent.getRuntimeMetrics(int64(i))
-		// Возвращаем в pool для чистоты теста
-		for j := range metrics {
-			metrics[j].Value = nil
-			metrics[j].Delta = nil
-		}
-		metricsPool.Put(metrics[:0])
-	}
+func (m *benchmarkMockSender) GetSentCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sentCount
 }
 
-func BenchmarkGetGopsutilMetrics(b *testing.B) {
+// BenchmarkMetricsAgent- бенчмарк для агента
+func BenchmarkMetricsAgent(b *testing.B) {
 	cfg := models.Config{
-		PollInterval:   2 * time.Second,
-		ReportInterval: 10 * time.Second,
-		RateLimit:      1,
+		PollInterval:   time.Millisecond,
+		ReportInterval: time.Millisecond * 10,
+		RateLimit:      5,
 	}
 
-	agent := NewMetricsAgent(cfg, &benchmarkMockSender{})
-	defer agent.cancel()
+	sender := &benchmarkMockSender{}
+	agent := NewMetricsAgent(cfg, sender, sender)
 
-	b.ResetTimer()
-	b.ReportAllocs()
+	// Запускаем агента
+	agent.Start()
 
-	for i := 0; i < b.N; i++ {
-		metrics := agent.getGopsutilMetrics()
-		// Возвращаем в pool
-		for j := range metrics {
-			metrics[j].Value = nil
-			metrics[j].Delta = nil
-		}
-		metricsPool.Put(metrics[:0])
-	}
+	// Ждем немного для сбора метрик
+	time.Sleep(100 * time.Millisecond)
+
+	// Останавливаем агента
+	agent.Stop()
+
+	b.ReportMetric(float64(sender.GetSentCount()), "metrics_sent")
 }
 
-func BenchmarkAgentCollector(b *testing.B) {
+// BenchmarkMetricsAgentWithLoad - бенчмарк с нагрузкой
+func BenchmarkMetricsAgentWithLoad(b *testing.B) {
 	cfg := models.Config{
-		PollInterval:   100 * time.Millisecond,
-		ReportInterval: 200 * time.Millisecond,
-		RateLimit:      1,
+		PollInterval:   time.Millisecond,
+		ReportInterval: time.Millisecond * 5,
+		RateLimit:      10,
 	}
 
-	agent := NewMetricsAgent(cfg, &benchmarkMockSender{})
-	defer agent.cancel()
-
-	b.ResetTimer()
-	b.ReportAllocs()
-
 	for i := 0; i < b.N; i++ {
-		agent.pollCount++
-		runtimeMetrics := agent.getRuntimeMetrics(agent.pollCount)
-		gopsutilMetrics := agent.getGopsutilMetrics()
+		sender := &benchmarkMockSender{}
+		agent := NewMetricsAgent(cfg, sender, sender)
 
-		// Возвращаем в pool
-		allMetrics := append(runtimeMetrics, gopsutilMetrics...)
-		for j := range allMetrics {
-			allMetrics[j].Value = nil
-			allMetrics[j].Delta = nil
-		}
-		metricsPool.Put(allMetrics[:0])
+		agent.Start()
+		time.Sleep(50 * time.Millisecond)
+		agent.Stop()
 	}
 }

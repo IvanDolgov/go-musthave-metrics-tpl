@@ -14,8 +14,14 @@ type TestStruct struct {
 }
 
 func (t *TestStruct) Reset() {
-	t.Data = t.Data[:0]
+	if t == nil {
+		return
+	}
+	if t.Data != nil {
+		t.Data = t.Data[:0]
+	}
 	t.Used = false
+	t.ID = 0
 }
 
 // TestStructNonPointer тестовая структура не указатель
@@ -24,6 +30,9 @@ type TestStructNonPointer struct {
 }
 
 func (t *TestStructNonPointer) Reset() {
+	if t == nil {
+		return
+	}
 	t.Value = 0
 }
 
@@ -60,6 +69,9 @@ func TestPoolGetPut(t *testing.T) {
 	}
 	if obj2.Used {
 		t.Error("Объект не был сброшен: Used = true")
+	}
+	if obj2.ID != 0 {
+		t.Errorf("Объект не был сброшен: ID = %d", obj2.ID)
 	}
 }
 
@@ -144,7 +156,7 @@ func TestPoolMultipleTypes(t *testing.T) {
 	p2 := New[*TestStructNonPointer]()
 	obj2 := p2.Get()
 	if obj2 != nil {
-		obj2.Value = 2 // Теперь это поле используется
+		obj2.Value = 2
 		p2.Put(obj2)
 	}
 
@@ -152,7 +164,6 @@ func TestPoolMultipleTypes(t *testing.T) {
 	t.Log("Multiple types test passed")
 }
 
-// TestPoolInterfaceCompliance проверяет, что пул работает с интерфейсами
 func TestPoolInterfaceCompliance(t *testing.T) {
 	p := New[*TestStruct]()
 	obj := p.Get()
@@ -171,10 +182,9 @@ func TestPoolNilSafety(t *testing.T) {
 	p := New[*TestStruct]()
 
 	// Не должно паниковать при вызове Put с nil
-	// (хотя это не рекомендуется на практике)
-	// p.Put(nil) // Это вызовет панику в текущей реализации
+	p.Put(nil)
 
-	// Но Get всегда должен возвращать валидный объект
+	// Get всегда должен возвращать валидный объект
 	obj := p.Get()
 	if obj == nil {
 		t.Fatal("Get() вернул nil")

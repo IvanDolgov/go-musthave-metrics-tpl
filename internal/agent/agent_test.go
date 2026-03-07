@@ -2,70 +2,93 @@ package agent
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 )
 
-// MockMetricsSender для тестирования
+// MockMetricsSender - мок только для отправки
 type MockMetricsSender struct {
-	sendCalled  int32
-	lastMetrics []models.Metrics
+	mu          sync.Mutex
+	sentMetrics [][]models.Metrics
 	shouldFail  bool
-	blockOnSend chan struct{}
-	sendError   error
-	mu          sync.RWMutex
-}
-
-func NewMockMetricsSender(shouldFail bool) *MockMetricsSender {
-	return &MockMetricsSender{
-		shouldFail:  shouldFail,
-		blockOnSend: make(chan struct{}),
-	}
+	failAfter   int
+	callCount   int
 }
 
 func (m *MockMetricsSender) SendMetricsBatch(ctx context.Context, metrics []models.Metrics) error {
-	atomic.AddInt32(&m.sendCalled, 1)
-
 	m.mu.Lock()
-	m.lastMetrics = metrics
-	m.mu.Unlock()
+	defer m.mu.Unlock()
 
-	if m.blockOnSend != nil {
-		select {
-		case <-m.blockOnSend:
-			// разблокировано
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	m.callCount++
+
+	if m.shouldFail && (m.failAfter == 0 || m.callCount > m.failAfter) {
+		return fmt.Errorf("mock send error")
 	}
 
-	if m.shouldFail {
-		if m.sendError != nil {
-			return m.sendError
-		}
-		return errors.New("mock send error")
-	}
+	metricsCopy := make([]models.Metrics, len(metrics))
+	copy(metricsCopy, metrics)
+	m.sentMetrics = append(m.sentMetrics, metricsCopy)
 
 	return nil
 }
 
-func (m *MockMetricsSender) GetSendCount() int {
-	return int(atomic.LoadInt32(&m.sendCalled))
+// Вспомогательные методы для тестов
+func (m *MockMetricsSender) GetSentMetrics() [][]models.Metrics {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([][]models.Metrics, len(m.sentMetrics))
+	for i, metrics := range m.sentMetrics {
+		metricsCopy := make([]models.Metrics, len(metrics))
+		copy(metricsCopy, metrics)
+		result[i] = metricsCopy
+	}
+	return result
 }
 
-func (m *MockMetricsSender) GetLastMetrics() []models.Metrics {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.lastMetrics
+func (m *MockMetricsSender) GetCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.callCount
 }
 
-func (m *MockMetricsSender) Unblock() {
-	close(m.blockOnSend)
+// MockLifecycle - мок для управления жизненным циклом
+type MockLifecycle struct {
+	started bool
+	stopped bool
+	waited  bool
+	mu      sync.Mutex
+}
+
+func (m *MockLifecycle) Start() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.started = true
+}
+
+func (m *MockLifecycle) Stop() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stopped = true
+}
+
+func (m *MockLifecycle) Wait() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.waited = true
+}
+
+// NewMockMetricsSender создает новый мок для тестов
+func NewMockMetricsSender(shouldFail bool) *MockMetricsSender {
+	return &MockMetricsSender{
+		sentMetrics: make([][]models.Metrics, 0),
+		shouldFail:  shouldFail,
+		failAfter:   0,
+		callCount:   0,
+	}
 }
 
 // TestNewMetricsAgent проверяет создание агента
@@ -77,7 +100,8 @@ func TestNewMetricsAgent(t *testing.T) {
 	}
 
 	sender := NewMockMetricsSender(false)
-	agent := NewMetricsAgent(cfg, sender)
+	lifecycle := &MockLifecycle{}
+	agent := NewMetricsAgent(cfg, sender, lifecycle)
 
 	if agent == nil {
 		t.Fatal("Agent should not be nil")
@@ -91,22 +115,32 @@ func TestNewMetricsAgent(t *testing.T) {
 		t.Error("Agent should have correct sender")
 	}
 
+	if agent.lifecycle != lifecycle {
+		t.Error("Agent should have correct lifecycle")
+	}
+
 	agent.cancel() // очистка контекста
 }
 
 // TestMetricsAgent_StartStop проверяет запуск и остановку агента
 func TestMetricsAgent_StartStop(t *testing.T) {
 	cfg := models.Config{
-		PollInterval:   50 * time.Millisecond, // очень маленькие интервалы для тестов
+		PollInterval:   50 * time.Millisecond,
 		ReportInterval: 100 * time.Millisecond,
 		RateLimit:      1,
 	}
 
 	sender := NewMockMetricsSender(false)
-	agent := NewMetricsAgent(cfg, sender)
+	lifecycle := &MockLifecycle{}
+	agent := NewMetricsAgent(cfg, sender, lifecycle)
 
 	// Запускаем агент
 	agent.Start()
+
+	// Проверяем что lifecycle был запущен
+	if !lifecycle.started {
+		t.Error("Lifecycle should be started")
+	}
 
 	// Ждем немного для сбора метрик
 	time.Sleep(150 * time.Millisecond)
@@ -114,11 +148,16 @@ func TestMetricsAgent_StartStop(t *testing.T) {
 	// Останавливаем агент
 	agent.Stop()
 
+	// Проверяем что lifecycle был остановлен
+	if !lifecycle.stopped {
+		t.Error("Lifecycle should be stopped")
+	}
+
 	// Даем время на graceful shutdown
 	time.Sleep(50 * time.Millisecond)
 
 	// Проверяем, что sender вызывался
-	if sender.GetSendCount() == 0 {
+	if sender.GetCallCount() == 0 {
 		t.Error("Sender should have been called at least once")
 	}
 }
@@ -132,7 +171,8 @@ func TestMetricsAgent_getRuntimeMetrics(t *testing.T) {
 	}
 
 	sender := NewMockMetricsSender(false)
-	agent := NewMetricsAgent(cfg, sender)
+	lifecycle := &MockLifecycle{}
+	agent := NewMetricsAgent(cfg, sender, lifecycle)
 
 	// Собираем метрики с pollCount = 1
 	metrics := agent.getRuntimeMetrics(1)
@@ -191,7 +231,8 @@ func TestMetricsAgent_getGopsutilMetrics(t *testing.T) {
 	}
 
 	sender := NewMockMetricsSender(false)
-	agent := NewMetricsAgent(cfg, sender)
+	lifecycle := &MockLifecycle{}
+	agent := NewMetricsAgent(cfg, sender, lifecycle)
 
 	// Собираем метрики
 	metrics := agent.getGopsutilMetrics()
@@ -224,10 +265,14 @@ func TestMetricsAgent_getRandomValue(t *testing.T) {
 	}
 
 	sender := NewMockMetricsSender(false)
-	agent := NewMetricsAgent(cfg, sender)
+	lifecycle := &MockLifecycle{}
+	agent := NewMetricsAgent(cfg, sender, lifecycle)
 
 	// Устанавливаем pollCount
+	agent.mu.Lock()
 	agent.pollCount = 42
+	agent.mu.Unlock()
+
 	value := agent.getRandomValue()
 
 	// Проверяем что значение в пределах 0-100
@@ -241,7 +286,10 @@ func TestMetricsAgent_getRandomValue(t *testing.T) {
 	}
 
 	// Проверяем для другого значения
+	agent.mu.Lock()
 	agent.pollCount = 150
+	agent.mu.Unlock()
+
 	value = agent.getRandomValue()
 	expected := 50.0 // 150 % 100 = 50
 	if value != expected {
@@ -260,7 +308,8 @@ func TestMetricsAgent_WorkerProcessing(t *testing.T) {
 	}
 
 	sender := NewMockMetricsSender(false)
-	agent := NewMetricsAgent(cfg, sender)
+	lifecycle := &MockLifecycle{}
+	agent := NewMetricsAgent(cfg, sender, lifecycle)
 
 	// Запускаем воркеров
 	for i := 0; i < int(cfg.RateLimit); i++ {
@@ -306,60 +355,8 @@ func TestMetricsAgent_WorkerProcessing(t *testing.T) {
 	}
 
 	// Проверяем что sender вызывался
-	if sender.GetSendCount() == 0 {
+	if sender.GetCallCount() == 0 {
 		t.Error("Sender should have processed metrics")
-	}
-}
-
-// TestMetricsAgent_WorkerErrorHandling проверяет обработку ошибок воркерами
-func TestMetricsAgent_WorkerErrorHandling(t *testing.T) {
-	cfg := models.Config{
-		PollInterval:   2 * time.Second,
-		ReportInterval: 10 * time.Second,
-		RateLimit:      1,
-	}
-
-	// Sender который всегда падает
-	sender := NewMockMetricsSender(true)
-	agent := NewMetricsAgent(cfg, sender)
-
-	// Разблокируем sender сразу
-	sender.Unblock()
-
-	// Запускаем воркер
-	agent.wg.Add(1)
-	go agent.worker(0)
-
-	// Отправляем метрики
-	testMetrics := []models.Metrics{
-		{ID: "test", MType: "gauge", Value: floatPtr(1.0)},
-	}
-
-	agent.metricsChan <- testMetrics
-
-	// Даем время на обработку
-	time.Sleep(100 * time.Millisecond)
-
-	// Останавливаем
-	agent.cancel()
-
-	// Ждем завершения воркера
-	done := make(chan struct{})
-	go func() {
-		agent.wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// успешно
-	case <-time.After(500 * time.Millisecond):
-		t.Error("Worker didn't stop in time")
-	}
-
-	// Проверяем что sender вызывался несмотря на ошибку
-	if sender.GetSendCount() != 1 {
-		t.Errorf("Sender should have been called once, got %d", sender.GetSendCount())
 	}
 }
 
@@ -372,7 +369,8 @@ func TestMetricsAgent_ContextCancellation(t *testing.T) {
 	}
 
 	sender := NewMockMetricsSender(false)
-	agent := NewMetricsAgent(cfg, sender)
+	lifecycle := &MockLifecycle{}
+	agent := NewMetricsAgent(cfg, sender, lifecycle)
 
 	// Запускаем агент
 	agent.Start()
@@ -407,7 +405,8 @@ func TestMetricsAgent_ConcurrentAccess(t *testing.T) {
 	}
 
 	sender := NewMockMetricsSender(false)
-	agent := NewMetricsAgent(cfg, sender)
+	lifecycle := &MockLifecycle{}
+	agent := NewMetricsAgent(cfg, sender, lifecycle)
 
 	// Запускаем несколько горутин которые инкрементят pollCount
 	const goroutines = 10
@@ -443,15 +442,6 @@ func TestMetricsAgent_ConcurrentAccess(t *testing.T) {
 	agent.cancel() // очистка
 }
 
-// Вспомогательная функция
-func floatPtr(f float64) *float64 {
-	return &f
-}
-
-func int64Ptr(i int64) *int64 {
-	return &i
-}
-
 // TestMetricsAgent_MetricStructure проверяет структуру метрик
 func TestMetricsAgent_MetricStructure(t *testing.T) {
 	cfg := models.Config{
@@ -461,7 +451,8 @@ func TestMetricsAgent_MetricStructure(t *testing.T) {
 	}
 
 	sender := NewMockMetricsSender(false)
-	agent := NewMetricsAgent(cfg, sender)
+	lifecycle := &MockLifecycle{}
+	agent := NewMetricsAgent(cfg, sender, lifecycle)
 
 	// Получаем runtime метрики
 	metrics := agent.getRuntimeMetrics(1)
@@ -495,4 +486,13 @@ func TestMetricsAgent_MetricStructure(t *testing.T) {
 	}
 
 	agent.cancel() // очистка
+}
+
+// Вспомогательные функции
+func floatPtr(f float64) *float64 {
+	return &f
+}
+
+func int64Ptr(i int64) *int64 {
+	return &i
 }

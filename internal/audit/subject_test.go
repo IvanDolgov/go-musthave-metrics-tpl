@@ -17,6 +17,7 @@ type MockObserver struct {
 	shouldError  bool
 	lastEvent    *Event
 	mu           sync.Mutex
+	wg           sync.WaitGroup // Добавляем WaitGroup для синхронизации
 }
 
 func NewMockObserver() *MockObserver {
@@ -26,6 +27,11 @@ func NewMockObserver() *MockObserver {
 func (m *MockObserver) Update(event *Event) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	defer func() {
+		// Сигнализируем о завершении обновления
+		m.wg.Done()
+	}()
 
 	m.lastEvent = event
 	m.updateCalled.Add(1)
@@ -56,6 +62,27 @@ func (m *MockObserver) SetDelay(delay time.Duration) {
 
 func (m *MockObserver) SetShouldError(shouldError bool) {
 	m.shouldError = shouldError
+}
+
+// Add ожидаемое количество вызовов
+func (m *MockObserver) AddExpectedCalls(n int) {
+	m.wg.Add(n)
+}
+
+// Wait ожидает завершения всех вызовов
+func (m *MockObserver) Wait(timeout time.Duration) bool {
+	c := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(c)
+	}()
+
+	select {
+	case <-c:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // TestNewConcreteSubject тестирует создание нового издателя
@@ -226,30 +253,42 @@ func TestNotify(t *testing.T) {
 				}
 				observers[i] = obs
 				subject.Register(obs)
+
+				// Ожидаем вызовы
+				if tt.expectedCalls > 0 {
+					obs.AddExpectedCalls(tt.expectedCalls)
+				}
 			}
 
 			if tt.running {
 				subject.Start()
 			}
 
-			// Создаем событие (пустое, так как структура не экспортирует поля)
+			// Создаем событие
 			event := &Event{}
 
-			// Уведомляем
-			subject.Notify(event)
+			// Уведомляем несколько раз
+			for i := 0; i < tt.expectedCalls; i++ {
+				subject.Notify(event)
+			}
 
-			// Даем время на обработку
-			time.Sleep(200 * time.Millisecond)
+			// Ждем завершения с таймаутом
+			timeout := 500 * time.Millisecond
+			if tt.observerDelay > 0 {
+				timeout += tt.observerDelay * time.Duration(tt.expectedCalls)
+			}
 
-			// Проверяем результаты
 			for i, obs := range observers {
+				if tt.expectedCalls > 0 {
+					assert.True(t, obs.Wait(timeout),
+						"observer %d timeout waiting for calls", i)
+				}
 				assert.Equal(t, tt.expectedCalls, obs.GetCallCount(),
 					"observer %d call count mismatch", i)
 
 				if tt.expectedCalls > 0 && tt.numObservers > 0 {
 					lastEvent := obs.GetLastEvent()
 					assert.NotNil(t, lastEvent)
-					// Не проверяем поля, так как они не экспортируются
 				}
 			}
 		})
@@ -273,15 +312,18 @@ func TestNotifyConcurrent(t *testing.T) {
 
 	// Отправляем множество событий конкурентно
 	numEvents := 10
+	for i := 0; i < numObservers; i++ {
+		observers[i].AddExpectedCalls(numEvents)
+	}
+
 	for i := 0; i < numEvents; i++ {
 		go subject.Notify(&Event{})
 	}
 
-	// Ждем обработки
-	time.Sleep(500 * time.Millisecond)
-
-	// Проверяем что все наблюдатели получили все события
+	// Ждем обработки с таймаутом
 	for i, obs := range observers {
+		assert.True(t, obs.Wait(2*time.Second),
+			"observer %d timeout waiting for events", i)
 		assert.Equal(t, numEvents, obs.GetCallCount(),
 			"observer %d should receive all events", i)
 	}
@@ -295,25 +337,27 @@ func TestNotifyWithTimeout(t *testing.T) {
 
 	// Создаем медленного наблюдателя
 	slowObserver := NewMockObserver()
-	slowObserver.SetDelay(10 * time.Second) // Дольше таймаута
+	slowObserver.SetDelay(100 * time.Millisecond) // Уменьшаем задержку для теста
 	subject.Register(slowObserver)
 
 	// Создаем быстрого наблюдателя
 	fastObserver := NewMockObserver()
 	subject.Register(fastObserver)
 
+	// Ожидаем вызовы
+	slowObserver.AddExpectedCalls(1)
+	fastObserver.AddExpectedCalls(1)
+
 	// Отправляем событие
 	subject.Notify(&Event{})
 
-	// Ждем немного (меньше чем таймаут медленного наблюдателя)
-	time.Sleep(100 * time.Millisecond)
-
-	// Проверяем что быстрый наблюдатель получил событие
+	// Ждем с таймаутом
+	assert.True(t, fastObserver.Wait(200*time.Millisecond),
+		"fast observer should receive event")
 	assert.Equal(t, 1, fastObserver.GetCallCount())
 
-	// Медленный наблюдатель может не получить событие из-за таймаута
-	// или получить его позже, это ожидаемое поведение
-	time.Sleep(100 * time.Millisecond)
+	// Медленный наблюдатель может получить событие позже
+	time.Sleep(200 * time.Millisecond)
 	// Не проверяем строго, так как поведение может быть разным
 }
 
@@ -324,6 +368,9 @@ func TestNotifyAfterStop(t *testing.T) {
 
 	mockObserver := NewMockObserver()
 	subject.Register(mockObserver)
+
+	// Ожидаем 0 вызовов
+	mockObserver.AddExpectedCalls(0)
 
 	// Останавливаем
 	subject.Stop()
@@ -366,7 +413,7 @@ func TestConcurrentRegisterDeregister(t *testing.T) {
 	}
 
 	// Ждем завершения
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 
 	// Не должно быть паник или дедлоков
 	assert.True(t, true)
@@ -400,15 +447,51 @@ func TestObserverReceivesEvent(t *testing.T) {
 	mockObserver := NewMockObserver()
 	subject.Register(mockObserver)
 
+	// Ожидаем 1 вызов
+	mockObserver.AddExpectedCalls(1)
+
 	// Создаем событие
 	event := &Event{}
 
 	subject.Notify(event)
-	time.Sleep(50 * time.Millisecond)
+
+	// Ждем с таймаутом
+	assert.True(t, mockObserver.Wait(500*time.Millisecond),
+		"observer should receive event")
 
 	receivedEvent := mockObserver.GetLastEvent()
 	assert.NotNil(t, receivedEvent)
 	assert.Equal(t, 1, mockObserver.GetCallCount())
+}
+
+// TestRegisterNilObserver тестирует регистрацию nil наблюдателя
+func TestRegisterNilObserver(t *testing.T) {
+	subject := NewConcreteSubject()
+
+	// Регистрируем nil (в текущей реализации это возможно)
+	subject.Register(nil)
+
+	// Проверяем что nil добавлен в срез
+	assert.Len(t, subject.observers, 1)
+	assert.Nil(t, subject.observers[0])
+}
+
+// TestDeregisterNilObserver тестирует удаление nil наблюдателя
+func TestDeregisterNilObserver(t *testing.T) {
+	subject := NewConcreteSubject()
+
+	// Добавляем nil и реального наблюдателя
+	realObserver := NewMockObserver()
+	subject.Register(nil)
+	subject.Register(realObserver)
+
+	assert.Len(t, subject.observers, 2)
+
+	// Удаляем nil
+	subject.Deregister(nil)
+
+	assert.Len(t, subject.observers, 1)
+	assert.Equal(t, realObserver, subject.observers[0])
 }
 
 // BenchmarkNotify бенчмарк для уведомлений
@@ -472,34 +555,4 @@ func TestStopWithActiveNotifications(t *testing.T) {
 
 	// Проверяем что остановка прошла без паники
 	assert.False(t, subject.running.Load())
-}
-
-// TestRegisterNilObserver тестирует регистрацию nil наблюдателя
-func TestRegisterNilObserver(t *testing.T) {
-	subject := NewConcreteSubject()
-
-	// Регистрируем nil (в текущей реализации это возможно)
-	subject.Register(nil)
-
-	// Проверяем что nil добавлен в срез
-	assert.Len(t, subject.observers, 1)
-	assert.Nil(t, subject.observers[0])
-}
-
-// TestDeregisterNilObserver тестирует удаление nil наблюдателя
-func TestDeregisterNilObserver(t *testing.T) {
-	subject := NewConcreteSubject()
-
-	// Добавляем nil и реального наблюдателя
-	realObserver := NewMockObserver()
-	subject.Register(nil)
-	subject.Register(realObserver)
-
-	assert.Len(t, subject.observers, 2)
-
-	// Удаляем nil
-	subject.Deregister(nil)
-
-	assert.Len(t, subject.observers, 1)
-	assert.Equal(t, realObserver, subject.observers[0])
 }

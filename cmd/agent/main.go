@@ -28,17 +28,34 @@ func run(ctx context.Context, cfg models.Config) error {
 	// Вывод информации о сборке
 	buildinfo.Print()
 
-	sender, err := sender.NewHTTPMetricsSender(cfg)
-	if err != nil {
-		return fmt.Errorf("failed to create metrics sender: %w", err)
+	var sdr agent.MetricsSender
+	var lifecycle agent.LifecycleManager
+
+	// Выбираем тип отправителя в зависимости от конфигурации
+	if cfg.UseGRPC {
+		logger.Log.Info("Using gRPC sender", zap.String("address", cfg.GRPCAddress))
+		grpcSender, err := sender.NewGRPCMetricsSender(cfg)
+		if err != nil {
+			return fmt.Errorf("failed to create gRPC sender: %w", err)
+		}
+		sdr = grpcSender
+		lifecycle = grpcSender
+	} else {
+		logger.Log.Info("Using HTTP sender", zap.String("address", cfg.Address))
+		httpSender, err := sender.NewHTTPMetricsSender(cfg)
+		if err != nil {
+			return fmt.Errorf("failed to create HTTP sender: %w", err)
+		}
+		sdr = httpSender
+		lifecycle = httpSender
 	}
 
 	// Запускаем обработчик отправки
-	sender.Start()
-	defer sender.Stop()
+	lifecycle.Start()
+	defer lifecycle.Stop()
 
 	// Создаем агента
-	metricsAgent := agent.NewMetricsAgent(cfg, sender)
+	metricsAgent := agent.NewMetricsAgent(cfg, sdr, lifecycle)
 
 	// Запускаем агента
 	metricsAgent.Start()
@@ -56,7 +73,7 @@ func run(ctx context.Context, cfg models.Config) error {
 	done := make(chan struct{})
 	go func() {
 		metricsAgent.Wait()
-		sender.Wait()
+		lifecycle.Wait()
 		close(done)
 	}()
 

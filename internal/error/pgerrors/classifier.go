@@ -32,6 +32,11 @@ func (c *PostgresErrorClassifier) Classify(err error) retry.ErrorClassification 
 }
 
 func classifyPgError(pgErr *pgconn.PgError) retry.ErrorClassification {
+	// Проверяем, что код ошибки не пустой
+	if pgErr == nil || pgErr.Code == "" {
+		return retry.NonRetriable
+	}
+
 	// Коды ошибок PostgreSQL: https://www.postgresql.org/docs/current/errcodes-appendix.html
 
 	switch pgErr.Code {
@@ -70,22 +75,26 @@ func classifyPgError(pgErr *pgconn.PgError) retry.ErrorClassification {
 
 	default:
 		// Проверяем по классу ошибки (первые 2 символа кода)
-		errorClass := pgErr.Code[0:2]
+		// Убеждаемся, что код достаточно длинный
+		if len(pgErr.Code) >= 2 {
+			errorClass := pgErr.Code[0:2]
 
-		switch errorClass {
-		case "08": // Connection Exception
-			return retry.Retriable
-		case "40": // Transaction Rollback
-			return retry.Retriable
-		case "53": // Insufficient Resources
-			return retry.Retriable
-		case "57": // Operator Intervention
-			return retry.Retriable
-		case "58": // System Error
-			return retry.Retriable
-		default:
-			return retry.NonRetriable
+			switch errorClass {
+			case "08": // Connection Exception
+				return retry.Retriable
+			case "40": // Transaction Rollback
+				return retry.Retriable
+			case "53": // Insufficient Resources
+				return retry.Retriable
+			case "57": // Operator Intervention
+				return retry.Retriable
+			case "58": // System Error
+				return retry.Retriable
+			default:
+				return retry.NonRetriable
+			}
 		}
+		return retry.NonRetriable
 	}
 }
 
@@ -93,8 +102,10 @@ func classifyPgError(pgErr *pgconn.PgError) retry.ErrorClassification {
 func (c *PostgresErrorClassifier) IsConnectionError(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
-		// Класс 08 - ошибки соединения
-		return pgErr.Code[0:2] == "08"
+		if pgErr != nil && len(pgErr.Code) >= 2 {
+			// Класс 08 - ошибки соединения
+			return pgErr.Code[0:2] == "08"
+		}
 	}
 	return false
 }
@@ -103,8 +114,10 @@ func (c *PostgresErrorClassifier) IsConnectionError(err error) bool {
 func (c *PostgresErrorClassifier) IsTransactionError(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
-		// Класс 40 - ошибки транзакции
-		return pgErr.Code[0:2] == "40"
+		if pgErr != nil && len(pgErr.Code) >= 2 {
+			// Класс 40 - ошибки транзакции
+			return pgErr.Code[0:2] == "40"
+		}
 	}
 	return false
 }

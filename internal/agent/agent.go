@@ -17,10 +17,23 @@ import (
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 )
 
+// MetricsSender определяет только отправку метрик (маленький интерфейс)
+type MetricsSender interface {
+	SendMetricsBatch(ctx context.Context, metrics []models.Metrics) error
+}
+
+// LifecycleManager определяет управление жизненным циклом
+type LifecycleManager interface {
+	Start()
+	Stop()
+	Wait()
+}
+
 // MetricsAgent собирает и отправляет метрики на сервер.
 type MetricsAgent struct {
 	cfg         models.Config
 	sender      MetricsSender
+	lifecycle   LifecycleManager
 	ctx         context.Context
 	cancel      context.CancelFunc
 	wg          sync.WaitGroup
@@ -29,11 +42,6 @@ type MetricsAgent struct {
 	mu          sync.RWMutex
 	pollCount   int64
 	stopping    bool
-}
-
-// MetricsSender определяет интерфейс для отправки метрик на сервер.
-type MetricsSender interface {
-	SendMetricsBatch(ctx context.Context, metrics []models.Metrics) error
 }
 
 // Pools для уменьшения аллокаций памяти.
@@ -62,7 +70,7 @@ type gaugeValue struct {
 }
 
 // NewMetricsAgent создает новый экземпляр агента метрик.
-func NewMetricsAgent(cfg models.Config, sender MetricsSender) *MetricsAgent {
+func NewMetricsAgent(cfg models.Config, sender MetricsSender, lifecycle LifecycleManager) *MetricsAgent {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	metricsChan := make(chan []models.Metrics, 100)
@@ -71,6 +79,7 @@ func NewMetricsAgent(cfg models.Config, sender MetricsSender) *MetricsAgent {
 	return &MetricsAgent{
 		cfg:         cfg,
 		sender:      sender,
+		lifecycle:   lifecycle,
 		ctx:         ctx,
 		cancel:      cancel,
 		metricsChan: metricsChan,
@@ -86,6 +95,11 @@ func (a *MetricsAgent) Start() {
 		zap.Duration("poll_interval", a.cfg.PollInterval),
 		zap.Duration("report_interval", a.cfg.ReportInterval),
 	)
+
+	// Запускаем жизненный цикл отправителя
+	if a.lifecycle != nil {
+		a.lifecycle.Start()
+	}
 
 	// Запускаем воркеры для отправки метрик
 	for i := 0; i < int(a.cfg.RateLimit); i++ {
@@ -124,7 +138,21 @@ func (a *MetricsAgent) Stop() {
 	}
 
 	// Закрываем канал после небольшой задержки
-	close(a.metricsChan)
+	// Исправление: проверяем, не закрыт ли уже канал
+	select {
+	case _, ok := <-a.metricsChan:
+		if ok {
+			close(a.metricsChan)
+		}
+	default:
+		// Канал пуст, закрываем
+		close(a.metricsChan)
+	}
+
+	// Останавливаем жизненный цикл отправителя
+	if a.lifecycle != nil {
+		a.lifecycle.Stop()
+	}
 
 	// Ожидаем завершения всех воркеров
 	a.wg.Wait()
@@ -134,6 +162,9 @@ func (a *MetricsAgent) Stop() {
 // Wait ожидает завершения всех горутин агента
 func (a *MetricsAgent) Wait() {
 	a.wg.Wait()
+	if a.lifecycle != nil {
+		a.lifecycle.Wait()
+	}
 }
 
 // worker обрабатывает метрики из канала с ограничением RPS.
@@ -239,25 +270,7 @@ func (a *MetricsAgent) collectRuntimeMetrics() {
 			)
 
 			// Отправляем метрики в канал для обработки воркерами
-			select {
-			case a.metricsChan <- metrics:
-			case <-a.ctx.Done():
-				// Возвращаем метрики в pool
-				for i := range metrics {
-					metrics[i].Value = nil
-					metrics[i].Delta = nil
-				}
-				runtimeMetricsPool.Put(metrics)
-				return
-			default:
-				logger.Log.Warn("Metrics channel full, dropping batch")
-				// Если канал полный, возвращаем метрики в pool
-				for i := range metrics {
-					metrics[i].Value = nil
-					metrics[i].Delta = nil
-				}
-				runtimeMetricsPool.Put(metrics)
-			}
+			a.sendMetricsToChannel(metrics)
 
 		case <-a.ctx.Done():
 			logger.Log.Debug("Runtime metrics collector stopping")
@@ -294,30 +307,65 @@ func (a *MetricsAgent) collectGopsutilMetrics() {
 			)
 
 			// Отправляем метрики в канал для обработки воркерами
-			select {
-			case a.metricsChan <- metrics:
-			case <-a.ctx.Done():
-				// Возвращаем метрики в pool
-				for i := range metrics {
-					metrics[i].Value = nil
-					metrics[i].Delta = nil
-				}
-				metricsPool.Put(metrics[:0])
-				return
-			default:
-				logger.Log.Warn("Metrics channel full, dropping gopsutil batch")
-				// Возвращаем метрики в pool
-				for i := range metrics {
-					metrics[i].Value = nil
-					metrics[i].Delta = nil
-				}
-				metricsPool.Put(metrics[:0])
-			}
+			a.sendMetricsToChannel(metrics)
 
 		case <-a.ctx.Done():
 			logger.Log.Debug("Gopsutil metrics collector stopping")
 			return
 		}
+	}
+}
+
+// sendMetricsToChannel отправляет метрики в канал с защитой от закрытого канала
+func (a *MetricsAgent) sendMetricsToChannel(metrics []models.Metrics) {
+	// Проверяем, не закрыт ли канал
+	select {
+	case <-a.ctx.Done():
+		// Контекст отменен, возвращаем метрики в пул
+		a.returnMetricsToPool(metrics)
+		return
+	default:
+		// Продолжаем
+	}
+
+	// Пытаемся отправить с защитой от паники при закрытом канале
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Log.Error("Panic while sending to channel",
+				zap.Any("recover", r))
+			a.returnMetricsToPool(metrics)
+		}
+	}()
+
+	select {
+	case a.metricsChan <- metrics:
+		// Успешно отправили
+	case <-a.ctx.Done():
+		// Контекст отменен во время ожидания
+		a.returnMetricsToPool(metrics)
+	default:
+		logger.Log.Warn("Metrics channel full, dropping batch")
+		a.returnMetricsToPool(metrics)
+	}
+}
+
+// returnMetricsToPool возвращает метрики в пул
+func (a *MetricsAgent) returnMetricsToPool(metrics []models.Metrics) {
+	if len(metrics) == 0 {
+		return
+	}
+
+	// Очищаем ссылки для GC
+	for i := range metrics {
+		metrics[i].Value = nil
+		metrics[i].Delta = nil
+	}
+
+	// Возвращаем в соответствующий пул
+	if cap(metrics) >= 36 {
+		runtimeMetricsPool.Put(metrics)
+	} else {
+		metricsPool.Put(metrics[:0])
 	}
 }
 

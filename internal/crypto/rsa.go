@@ -70,6 +70,10 @@ func GenerateKeyPair(privateKeyPath, publicKeyPath string, bits int) error {
 
 // LoadPrivateKey загружает приватный ключ из файла
 func LoadPrivateKey(path string) (*rsa.PrivateKey, error) {
+	if path == "" {
+		return nil, fmt.Errorf("private key path is empty")
+	}
+
 	keyBytes, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read private key file: %w", err)
@@ -99,6 +103,10 @@ func LoadPrivateKey(path string) (*rsa.PrivateKey, error) {
 
 // LoadPublicKey загружает публичный ключ из файла
 func LoadPublicKey(path string) (*rsa.PublicKey, error) {
+	if path == "" {
+		return nil, fmt.Errorf("public key path is empty")
+	}
+
 	keyBytes, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read public key file: %w", err)
@@ -126,11 +134,23 @@ func LoadPublicKey(path string) (*rsa.PublicKey, error) {
 // Внимание: этот метод имеет ограничение на размер данных!
 // Для больших данных используйте EncryptWithHybrid
 func EncryptWithPublicKey(msg []byte, pubKey *rsa.PublicKey) ([]byte, error) {
+	if pubKey == nil {
+		return nil, fmt.Errorf("public key is nil")
+	}
+	if len(msg) == 0 {
+		return nil, fmt.Errorf("message is empty")
+	}
 	return rsa.EncryptOAEP(sha256.New(), rand.Reader, pubKey, msg, nil)
 }
 
 // DecryptWithPrivateKey расшифровывает данные с использованием RSA
 func DecryptWithPrivateKey(ciphertext []byte, privKey *rsa.PrivateKey) ([]byte, error) {
+	if privKey == nil {
+		return nil, fmt.Errorf("private key is nil")
+	}
+	if len(ciphertext) == 0 {
+		return nil, fmt.Errorf("ciphertext is empty")
+	}
 	return rsa.DecryptOAEP(sha256.New(), rand.Reader, privKey, ciphertext, nil)
 }
 
@@ -140,6 +160,13 @@ func DecryptWithPrivateKey(ciphertext []byte, privKey *rsa.PrivateKey) ([]byte, 
 // 3. AES-ключ шифруется RSA-OAEP
 // Формат: [длина зашифрованного ключа:4][зашифрованный ключ][nonce:12][зашифрованные данные]
 func EncryptWithHybrid(plaintext []byte, pubKey *rsa.PublicKey) ([]byte, error) {
+	if pubKey == nil {
+		return nil, fmt.Errorf("public key is nil")
+	}
+	if len(plaintext) == 0 {
+		return nil, fmt.Errorf("plaintext is empty")
+	}
+
 	// 1. Генерируем случайный AES-ключ
 	aesKey := make([]byte, AESKeySize)
 	if _, err := io.ReadFull(rand.Reader, aesKey); err != nil {
@@ -192,15 +219,19 @@ func EncryptWithHybrid(plaintext []byte, pubKey *rsa.PublicKey) ([]byte, error) 
 
 // DecryptWithHybrid расшифровывает данные, зашифрованные гибридной схемой
 func DecryptWithHybrid(ciphertext []byte, privKey *rsa.PrivateKey) ([]byte, error) {
+	if privKey == nil {
+		return nil, fmt.Errorf("private key is nil")
+	}
 	if len(ciphertext) < 4 {
-		return nil, fmt.Errorf("ciphertext too short")
+		return nil, fmt.Errorf("ciphertext too short: need at least 4 bytes, got %d", len(ciphertext))
 	}
 
 	// 1. Читаем длину зашифрованного ключа
 	keyLen := binary.BigEndian.Uint32(ciphertext[0:4])
 
 	if len(ciphertext) < int(4+keyLen+NonceSize) {
-		return nil, fmt.Errorf("ciphertext too short for key and nonce")
+		return nil, fmt.Errorf("ciphertext too short for key and nonce: need %d, got %d",
+			4+keyLen+NonceSize, len(ciphertext))
 	}
 
 	// 2. Извлекаем зашифрованный ключ

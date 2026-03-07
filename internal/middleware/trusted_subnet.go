@@ -11,21 +11,29 @@ import (
 
 // TrustedSubnetMiddleware проверяет, что IP-адрес клиента входит в доверенную подсеть
 func TrustedSubnetMiddleware(trustedSubnet string) func(http.Handler) http.Handler {
+	// Парсим доверенную подсеть ОДИН РАЗ при создании middleware
+	var ipNet *net.IPNet
+	if trustedSubnet != "" {
+		_, parsed, err := net.ParseCIDR(trustedSubnet)
+		if err != nil {
+			logger.Log.Error("Invalid trusted subnet CIDR",
+				zap.String("subnet", trustedSubnet),
+				zap.Error(err))
+			// Возвращаем middleware, который будет отклонять все запросы
+			return func(next http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					http.Error(w, "Invalid trusted subnet configuration", http.StatusInternalServerError)
+				})
+			}
+		}
+		ipNet = parsed
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Если подсеть не задана, пропускаем все запросы
-			if trustedSubnet == "" {
+			if trustedSubnet == "" || ipNet == nil {
 				next.ServeHTTP(w, r)
-				return
-			}
-
-			// Парсим доверенную подсеть
-			_, ipNet, err := net.ParseCIDR(trustedSubnet)
-			if err != nil {
-				logger.Log.Error("Invalid trusted subnet CIDR",
-					zap.String("subnet", trustedSubnet),
-					zap.Error(err))
-				http.Error(w, "Internal server error", http.StatusInternalServerError)
 				return
 			}
 

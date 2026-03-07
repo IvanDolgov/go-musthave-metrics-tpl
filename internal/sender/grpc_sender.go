@@ -29,13 +29,11 @@ type GRPCMetricsSender struct {
 
 // NewGRPCMetricsSender создает новый экземпляр GRPCMetricsSender
 func NewGRPCMetricsSender(cfg models.Config) (*GRPCMetricsSender, error) {
-	// Определяем адрес gRPC сервера
 	grpcAddr := cfg.GRPCAddress
 	if grpcAddr == "" {
 		grpcAddr = "localhost:3200"
 	}
 
-	// Устанавливаем соединение с gRPC сервером
 	conn, err := grpc.NewClient(
 		grpcAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -61,44 +59,7 @@ func NewGRPCMetricsSender(cfg models.Config) (*GRPCMetricsSender, error) {
 	return sender, nil
 }
 
-// initLocalIP инициализирует локальный IP адрес
-func (s *GRPCMetricsSender) initLocalIP() {
-	s.ipOnce.Do(func() {
-		ip, err := getLocalIP()
-		if err != nil {
-			logger.Log.Warn("Failed to get local IP", zap.Error(err))
-			s.localIP = ""
-		} else {
-			s.localIP = ip
-			logger.Log.Debug("Local IP detected", zap.String("ip", s.localIP))
-		}
-	})
-}
-
-// Start запускает обработчик отправки метрик
-func (s *GRPCMetricsSender) Start() {
-	s.wg.Add(1)
-	go s.processMetrics()
-	logger.Log.Info("gRPC metrics sender started")
-}
-
-// Stop останавливает обработчик и ожидает завершения всех отправок
-func (s *GRPCMetricsSender) Stop() {
-	logger.Log.Info("Stopping gRPC metrics sender, waiting for pending requests...")
-	close(s.shutdown)
-	s.wg.Wait()
-	if s.conn != nil {
-		s.conn.Close()
-	}
-	logger.Log.Info("gRPC metrics sender stopped")
-}
-
-// Wait ожидает завершения всех горутин отправителя
-func (s *GRPCMetricsSender) Wait() {
-	s.wg.Wait()
-}
-
-// SendMetricsBatch отправляет батч метрик на сервер (неблокирующий вызов)
+// SendMetricsBatch реализует интерфейс MetricsSender
 func (s *GRPCMetricsSender) SendMetricsBatch(ctx context.Context, metrics []models.Metrics) error {
 	select {
 	case s.metricsChan <- metrics:
@@ -108,6 +69,28 @@ func (s *GRPCMetricsSender) SendMetricsBatch(ctx context.Context, metrics []mode
 	case <-s.shutdown:
 		return fmt.Errorf("sender is shutting down")
 	}
+}
+
+// Start реализует интерфейс LifecycleManager
+func (s *GRPCMetricsSender) Start() {
+	s.wg.Add(1)
+	go s.processMetrics()
+	logger.Log.Info("gRPC metrics sender started")
+}
+
+// Stop реализует интерфейс LifecycleManager
+func (s *GRPCMetricsSender) Stop() {
+	logger.Log.Info("Stopping gRPC metrics sender, waiting for pending requests...")
+	close(s.shutdown)
+}
+
+// Wait реализует интерфейс LifecycleManager
+func (s *GRPCMetricsSender) Wait() {
+	s.wg.Wait()
+	if s.conn != nil {
+		s.conn.Close()
+	}
+	logger.Log.Info("gRPC metrics sender stopped")
 }
 
 // processMetrics обрабатывает метрики из канала и отправляет их на сервер
@@ -163,6 +146,20 @@ func (s *GRPCMetricsSender) drainAndSend() {
 	}
 }
 
+// initLocalIP инициализирует локальный IP адрес
+func (s *GRPCMetricsSender) initLocalIP() {
+	s.ipOnce.Do(func() {
+		ip, err := getLocalIP()
+		if err != nil {
+			logger.Log.Warn("Failed to get local IP", zap.Error(err))
+			s.localIP = ""
+		} else {
+			s.localIP = ip
+			logger.Log.Debug("Local IP detected", zap.String("ip", s.localIP))
+		}
+	})
+}
+
 // sendMetrics отправляет метрики на сервер через gRPC
 func (s *GRPCMetricsSender) sendMetrics(metrics []models.Metrics) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -197,7 +194,7 @@ func (s *GRPCMetricsSender) sendMetricsWithContext(ctx context.Context, metrics 
 		pbMetrics = append(pbMetrics, pbMetric)
 	}
 
-	// Создаем запрос (используем обычную структуру, не _builder)
+	// Создаем запрос
 	request := &pb.UpdateMetricsRequest{
 		Metrics: pbMetrics,
 	}

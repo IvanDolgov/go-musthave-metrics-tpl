@@ -9,7 +9,7 @@ import (
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 )
 
-// benchmarkMockSender - мок для бенчмарков (единое определение)
+// benchmarkMockSender - мок для бенчмарков
 type benchmarkMockSender struct {
 	mu        sync.Mutex
 	sentCount int
@@ -43,15 +43,15 @@ func BenchmarkMetricsAgent(b *testing.B) {
 	}
 
 	sender := &benchmarkMockSender{}
-	agent := NewMetricsAgent(cfg, sender)
+	agent := NewMetricsAgent(cfg, sender, sender)
 
-	// Запускаем агент
+	// Запускаем агента
 	agent.Start()
 
 	// Ждем немного для сбора метрик
 	time.Sleep(100 * time.Millisecond)
 
-	// Останавливаем агент
+	// Останавливаем агента
 	agent.Stop()
 
 	b.ReportMetric(float64(sender.GetSentCount()), "metrics_sent")
@@ -67,7 +67,7 @@ func BenchmarkMetricsAgentWithLoad(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		sender := &benchmarkMockSender{}
-		agent := NewMetricsAgent(cfg, sender)
+		agent := NewMetricsAgent(cfg, sender, sender)
 
 		agent.Start()
 		time.Sleep(50 * time.Millisecond)

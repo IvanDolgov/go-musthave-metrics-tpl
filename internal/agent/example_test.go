@@ -1,136 +1,89 @@
-package agent
+package agent_test
 
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
+	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/agent"
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 )
 
-// MockSender реализация MetricsSender для примеров.
-type MockSender struct{}
+// MockSender - мок для примеров
+type MockSender struct {
+	metrics [][]models.Metrics
+	mu      sync.Mutex
+}
 
 func (m *MockSender) SendMetricsBatch(ctx context.Context, metrics []models.Metrics) error {
-	fmt.Printf("Sent %d metrics\n", len(metrics))
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	metricsCopy := make([]models.Metrics, len(metrics))
+	copy(metricsCopy, metrics)
+	m.metrics = append(m.metrics, metricsCopy)
 	return nil
 }
 
-func (m *MockSender) Start() {}
-func (m *MockSender) Stop()  {}
-func (m *MockSender) Wait()  {}
+// MockLifecycle - мок для примеров
+type MockLifecycle struct{}
 
-// ExampleMetricsAgent демонстрирует создание и запуск агента метрик.
-func ExampleMetricsAgent() {
-	// Конфигурация агента
+func (m *MockLifecycle) Start() {}
+func (m *MockLifecycle) Stop()  {}
+func (m *MockLifecycle) Wait()  {}
+
+func ExampleNewMetricsAgent() {
+	// Создаем конфигурацию
 	cfg := models.Config{
-		PollInterval:   2 * time.Second,
-		ReportInterval: 10 * time.Second,
+		PollInterval:   time.Second,
+		ReportInterval: time.Second * 2,
 		RateLimit:      5,
 	}
 
-	// Создаем mock отправитель
+	// Создаем моки
 	sender := &MockSender{}
+	lifecycle := &MockLifecycle{}
 
-	// Создаем агент
-	agent := NewMetricsAgent(cfg, sender)
+	// Создаем агента
+	metricsAgent := agent.NewMetricsAgent(cfg, sender, lifecycle)
 
-	// Запускаем агент
-	agent.Start()
+	// Запускаем агента
+	metricsAgent.Start()
+	defer metricsAgent.Stop()
 
-	// Даем агенту поработать некоторое время
-	fmt.Println("Agent started. Collecting metrics for 3 seconds...")
-	time.Sleep(3 * time.Second)
+	// Даем время на сбор метрик
+	time.Sleep(time.Second * 3)
 
-	// Останавливаем агент
-	agent.Stop()
+	// Останавливаем агента
+	metricsAgent.Stop()
+	metricsAgent.Wait()
+
 	fmt.Println("Agent stopped")
-
-	// Вывод (примерный):
-	// Agent started. Collecting metrics for 3 seconds...
-	// Sent 36 metrics
-	// Sent 4 metrics
-	// Agent stopped
+	// Output: Agent stopped
 }
 
-// ExampleMetricsAgent_config демонстрирует различные конфигурации агента.
-func ExampleMetricsAgent_config() {
-	// Конфигурация для разработки (частый сбор метрик)
-	devConfig := models.Config{
-		PollInterval:   1 * time.Second,
-		ReportInterval: 5 * time.Second,
-		RateLimit:      10,
-	}
-	fmt.Printf("Dev config - Poll: %v, Report: %v, RateLimit: %d\n",
-		devConfig.PollInterval, devConfig.ReportInterval, devConfig.RateLimit)
-
-	// Конфигурация для продакшена (редкий сбор для экономии ресурсов)
-	prodConfig := models.Config{
-		PollInterval:   10 * time.Second,
-		ReportInterval: 30 * time.Second,
+func ExampleMetricsAgent_Start() {
+	cfg := models.Config{
+		PollInterval:   time.Millisecond * 100,
+		ReportInterval: time.Millisecond * 200,
 		RateLimit:      2,
 	}
-	fmt.Printf("Prod config - Poll: %v, Report: %v, RateLimit: %d\n",
-		prodConfig.PollInterval, prodConfig.ReportInterval, prodConfig.RateLimit)
-
-	// Вывод:
-	// Dev config - Poll: 1s, Report: 5s, RateLimit: 10
-	// Prod config - Poll: 10s, Report: 30s, RateLimit: 2
-}
-
-// ExampleRuntimeMetrics демонстрирует сбор runtime метрик.
-func Example_runtimeMetrics() {
-	cfg := models.Config{
-		PollInterval:   2 * time.Second,
-		ReportInterval: 10 * time.Second,
-		RateLimit:      5,
-	}
 
 	sender := &MockSender{}
-	agent := NewMetricsAgent(cfg, sender)
+	lifecycle := &MockLifecycle{}
 
-	// Получаем runtime метрики
-	metrics := agent.getRuntimeMetrics(1)
-	fmt.Printf("Collected %d runtime metrics\n", len(metrics))
+	metricsAgent := agent.NewMetricsAgent(cfg, sender, lifecycle)
 
-	// Показываем примеры метрик
-	for i, metric := range metrics {
-		if i < 3 { // Покажем первые 3 метрики
-			fmt.Printf("Metric %d: %s (type: %s)\n", i+1, metric.ID, metric.MType)
-		}
-	}
+	// Запускаем агента
+	metricsAgent.Start()
 
-	// Вывод (примерный):
-	// Collected 36 runtime metrics
-	// Metric 1: Alloc (type: gauge)
-	// Metric 2: BuckHashSys (type: gauge)
-	// Metric 3: Frees (type: gauge)
-}
+	// Даем время поработать
+	time.Sleep(time.Millisecond * 500)
 
-// ExampleGopsutilMetrics демонстрирует сбор системных метрик через gopsutil.
-func Example_gopsutilMetrics() {
-	cfg := models.Config{
-		PollInterval:   2 * time.Second,
-		ReportInterval: 10 * time.Second,
-		RateLimit:      5,
-	}
+	// Останавливаем
+	metricsAgent.Stop()
+	metricsAgent.Wait()
 
-	sender := &MockSender{}
-	agent := NewMetricsAgent(cfg, sender)
-
-	// Получаем gopsutil метрики
-	metrics := agent.getGopsutilMetrics()
-	fmt.Printf("Collected %d gopsutil metrics\n", len(metrics))
-
-	// Показываем типы собираемых метрик
-	for _, metric := range metrics {
-		fmt.Printf("System metric: %s (type: %s)\n", metric.ID, metric.MType)
-	}
-
-	// Вывод (примерный):
-	// Collected 4 gopsutil metrics
-	// System metric: TotalMemory (type: gauge)
-	// System metric: FreeMemory (type: gauge)
-	// System metric: CPUutilization1 (type: gauge)
-	// System metric: CPUutilization2 (type: gauge)
+	fmt.Println("Agent started and stopped")
+	// Output: Agent started and stopped
 }

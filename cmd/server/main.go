@@ -95,7 +95,7 @@ func run(cfg models.Config) error {
 	// Создаем канал для ошибок
 	errChan := make(chan error, 2)
 
-	// Запускаем HTTP сервер
+	// Запускаем HTTP сервер (всегда)
 	go func() {
 		logger.Log.Info("Starting HTTP server", zap.String("address", cfg.Address))
 		if err := startHTTPServer(cfg, store, dbStorage, auditSubject); err != nil {
@@ -103,24 +103,31 @@ func run(cfg models.Config) error {
 		}
 	}()
 
-	// Запускаем gRPC сервер (если USE_GRPC включен или просто всегда запускаем)
-	go func() {
-		grpcAddr := cfg.GRPCAddress
-		if grpcAddr == "" {
-			grpcAddr = ":3200"
-		}
+	// Запускаем gRPC сервер ТОЛЬКО если явно включен флагом
+	if cfg.UseGRPC {
+		go func() {
+			grpcAddr := cfg.GRPCAddress
+			if grpcAddr == "" {
+				grpcAddr = ":3200"
+			}
 
-		logger.Log.Info("Starting gRPC server", zap.String("address", grpcAddr))
-		grpcServer, lis, err := server.StartGRPCServer(grpcAddr, store, cfg.TrustedSubnet)
-		if err != nil {
-			errChan <- fmt.Errorf("failed to start gRPC server: %w", err)
-			return
-		}
+			logger.Log.Info("Starting gRPC server",
+				zap.String("address", grpcAddr),
+				zap.Bool("enabled", cfg.UseGRPC))
 
-		if err := grpcServer.Serve(lis); err != nil {
-			errChan <- fmt.Errorf("gRPC server error: %w", err)
-		}
-	}()
+			grpcServer, lis, err := server.StartGRPCServer(grpcAddr, store, cfg.TrustedSubnet)
+			if err != nil {
+				errChan <- fmt.Errorf("failed to start gRPC server: %w", err)
+				return
+			}
+
+			if err := grpcServer.Serve(lis); err != nil {
+				errChan <- fmt.Errorf("gRPC server error: %w", err)
+			}
+		}()
+	} else {
+		logger.Log.Info("gRPC server disabled (use -grpc flag to enable)")
+	}
 
 	// Канал для сигналов ОС
 	sigChan := make(chan os.Signal, 1)

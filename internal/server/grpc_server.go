@@ -33,11 +33,6 @@ func NewMetricsServer(store storage.Storage, trustedSubnet string) *MetricsServe
 
 // UpdateMetrics обрабатывает запрос на обновление метрик
 func (s *MetricsServer) UpdateMetrics(ctx context.Context, req *pb.UpdateMetricsRequest) (*pb.UpdateMetricsResponse, error) {
-	// Проверка IP уже выполнена в interceptor, но на всякий случай проверяем контекст
-	if err := s.checkIP(ctx); err != nil {
-		return nil, err
-	}
-
 	metrics := req.GetMetrics()
 	if len(metrics) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "empty metrics batch")

@@ -220,10 +220,25 @@ func TestHashResponseWriter(t *testing.T) {
 
 	t.Run("Empty key - no hash", func(t *testing.T) {
 		mockWriter := httptest.NewRecorder()
-		// Используем пустой ключ - это допустимо
-		hw := &hashResponseWriter{
-			ResponseWriter: mockWriter,
-			key:            "", // Пустой ключ - OK
+
+		// Вместо создания структуры с пустым ключом,
+		// используем вариант с nil или просто не передаём ключ,
+		// если логика middleware это позволяет.
+		// Предположим, что HashResponseWithKey("") вернёт middleware,
+		// который внутри создаст hashResponseWriter с пустым ключом.
+		// Но для прямого тестирования структуры лучше сделать так:
+
+		var hw *hashResponseWriter
+		if true { // эмуляция условия, когда ключ пустой
+			hw = &hashResponseWriter{
+				ResponseWriter: mockWriter,
+				// key: "", // Просто не указываем поле key, оно будет иметь zero value ("")
+			}
+		} else {
+			hw = &hashResponseWriter{
+				ResponseWriter: mockWriter,
+				key:            "some-key",
+			}
 		}
 
 		hw.WriteHeader(http.StatusOK)

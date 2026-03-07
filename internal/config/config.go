@@ -11,7 +11,7 @@ import (
 	"github.com/IvanDolgov/go-musthave-metrics-tpl/internal/models"
 )
 
-// ParseServerFlags парсит флаги командной строки для сервера с поддержкой JSON конфига
+// ParseServerFlags парсит флаги командной строки для сервера
 func ParseServerFlags() models.Config {
 	var (
 		address         string
@@ -25,10 +25,12 @@ func ParseServerFlags() models.Config {
 		auditURL        string
 		configFile      string
 		trustedSubnet   string
+		useGRPC         bool
+		grpcAddress     string
 	)
 
 	// Регистрируем флаги для сервера
-	flag.StringVar(&address, "a", "localhost:8080", "server address")
+	flag.StringVar(&address, "a", "localhost:8080", "HTTP server address")
 	flag.Int64Var(&storeInterval, "i", 300, "store interval in seconds")
 	flag.StringVar(&fileStoragePath, "f", "", "path storage file")
 	flag.BoolVar(&restore, "r", true, "upload previous metrics from file")
@@ -41,6 +43,10 @@ func ParseServerFlags() models.Config {
 	flag.StringVar(&configFile, "config", "", "path to config file")
 	flag.StringVar(&trustedSubnet, "t", "", "trusted subnet in CIDR notation")
 
+	// Новые флаги для gRPC
+	flag.BoolVar(&useGRPC, "grpc", false, "use gRPC instead of HTTP")
+	flag.StringVar(&grpcAddress, "grpc-addr", "localhost:3200", "gRPC server address")
+
 	flag.Parse()
 
 	// Проверяем переменную окружения CONFIG
@@ -48,99 +54,19 @@ func ParseServerFlags() models.Config {
 		configFile = envConfig
 	}
 
-	// Загружаем JSON конфигурацию, если указан файл
-	jsonConfig, _ := loadJSONConfig(configFile) // игнорируем ошибку, используем значения по умолчанию
+	// Загружаем JSON конфигурацию
+	jsonConfig, _ := loadJSONConfig(configFile)
 
 	// Применяем значения из JSON конфига (низкий приоритет)
 	if jsonConfig != nil {
-		if val, ok := jsonConfig["address"]; ok {
-			if str := parseString(val, ""); str != "" && address == "localhost:8080" {
-				address = str
-			}
-		}
-		if val, ok := jsonConfig["restore"]; ok {
-			restore = parseBool(val, restore)
-		}
-		if val, ok := jsonConfig["store_interval"]; ok {
-			if str := parseString(val, ""); str != "" {
-				// Парсим длительность из строки (например "300s")
-				duration := parseDuration(str, time.Duration(storeInterval)*time.Second)
-				storeInterval = int64(duration.Seconds())
-			}
-		}
-		if val, ok := jsonConfig["store_file"]; ok {
-			if str := parseString(val, ""); str != "" && fileStoragePath == "" {
-				fileStoragePath = str
-			}
-		}
-		if val, ok := jsonConfig["database_dsn"]; ok {
-			if str := parseString(val, ""); str != "" && databaseDsn == "" {
-				databaseDsn = str
-			}
-		}
-		if val, ok := jsonConfig["crypto_key"]; ok {
-			if str := parseString(val, ""); str != "" && cryptoKey == "" {
-				cryptoKey = str
-			}
-		}
-		if val, ok := jsonConfig["key"]; ok {
-			if str := parseString(val, ""); str != "" && key == "" {
-				key = str
-			}
-		}
-		if val, ok := jsonConfig["audit_file"]; ok {
-			if str := parseString(val, ""); str != "" && auditFile == "" {
-				auditFile = str
-			}
-		}
-		if val, ok := jsonConfig["audit_url"]; ok {
-			if str := parseString(val, ""); str != "" && auditURL == "" {
-				auditURL = str
-			}
-		}
-		if val, ok := jsonConfig["trusted_subnet"]; ok {
-			if str := parseString(val, ""); str != "" && trustedSubnet == "" {
-				trustedSubnet = str
-			}
-		}
+		applyJSONConfig(jsonConfig, &address, &storeInterval, &fileStoragePath, &restore,
+			&databaseDsn, &key, &cryptoKey, &auditFile, &auditURL, &trustedSubnet,
+			&useGRPC, &grpcAddress)
 	}
 
-	// Применяем приоритеты параметров (env vars имеют приоритет над флагами и JSON)
-	if envAddress := os.Getenv("ADDRESS"); envAddress != "" {
-		address = envAddress
-	}
-
-	storeInterval = getEnvInt64("STORE_INTERVAL", storeInterval)
-
-	if envFileStoragePath := os.Getenv("FILE_STORAGE_PATH"); envFileStoragePath != "" {
-		fileStoragePath = envFileStoragePath
-	}
-
-	restore = getEnvBool("RESTORE", restore)
-
-	if envDatabaseDSN := os.Getenv("DATABASE_DSN"); envDatabaseDSN != "" {
-		databaseDsn = envDatabaseDSN
-	}
-
-	if envKey := os.Getenv("KEY"); envKey != "" {
-		key = envKey
-	}
-
-	if envCryptoKey := os.Getenv("CRYPTO_KEY"); envCryptoKey != "" {
-		cryptoKey = envCryptoKey
-	}
-
-	if envAuditFile := os.Getenv("AUDIT_FILE"); envAuditFile != "" {
-		auditFile = envAuditFile
-	}
-
-	if envAuditURL := os.Getenv("AUDIT_URL"); envAuditURL != "" {
-		auditURL = envAuditURL
-	}
-
-	if envTrustedSubnet := os.Getenv("TRUSTED_SUBNET"); envTrustedSubnet != "" {
-		trustedSubnet = envTrustedSubnet
-	}
+	// Применяем переменные окружения (средний приоритет)
+	applyEnvVars(&address, &storeInterval, &fileStoragePath, &restore, &databaseDsn,
+		&key, &cryptoKey, &auditFile, &auditURL, &trustedSubnet, &useGRPC, &grpcAddress)
 
 	// Парсим адрес на server и port
 	server, port := parseAddress(address)
@@ -158,10 +84,12 @@ func ParseServerFlags() models.Config {
 		AuditFile:       auditFile,
 		AuditURL:        auditURL,
 		TrustedSubnet:   trustedSubnet,
+		UseGRPC:         useGRPC,
+		GRPCAddress:     grpcAddress,
 	}
 }
 
-// ParseAgentFlags парсит флаги командной строки для агента с поддержкой JSON конфига
+// ParseAgentFlags парсит флаги командной строки для агента
 func ParseAgentFlags() models.Config {
 	var (
 		address        string
@@ -171,10 +99,12 @@ func ParseAgentFlags() models.Config {
 		cryptoKey      string
 		rateLimit      int64
 		configFile     string
+		useGRPC        bool
+		grpcAddress    string
 	)
 
 	// Регистрируем флаги для агента
-	flag.StringVar(&address, "a", "localhost:8080", "server address")
+	flag.StringVar(&address, "a", "localhost:8080", "HTTP server address")
 	flag.Int64Var(&pollInterval, "p", 2, "poll interval in seconds")
 	flag.Int64Var(&reportInterval, "r", 10, "report interval in seconds")
 	flag.StringVar(&key, "k", "", "secret key for request signing")
@@ -183,6 +113,10 @@ func ParseAgentFlags() models.Config {
 	flag.StringVar(&configFile, "c", "", "path to config file")
 	flag.StringVar(&configFile, "config", "", "path to config file")
 
+	// Новые флаги для gRPC
+	flag.BoolVar(&useGRPC, "grpc", false, "use gRPC instead of HTTP")
+	flag.StringVar(&grpcAddress, "grpc-addr", "localhost:3200", "gRPC server address")
+
 	flag.Parse()
 
 	// Проверяем переменную окружения CONFIG
@@ -190,64 +124,18 @@ func ParseAgentFlags() models.Config {
 		configFile = envConfig
 	}
 
-	// Загружаем JSON конфигурацию, если указан файл
-	jsonConfig, _ := loadJSONConfig(configFile) // игнорируем ошибку, используем значения по умолчанию
+	// Загружаем JSON конфигурацию
+	jsonConfig, _ := loadJSONConfig(configFile)
 
 	// Применяем значения из JSON конфига (низкий приоритет)
 	if jsonConfig != nil {
-		if val, ok := jsonConfig["address"]; ok {
-			if str := parseString(val, ""); str != "" && address == "localhost:8080" {
-				address = str
-			}
-		}
-		if val, ok := jsonConfig["report_interval"]; ok {
-			if str := parseString(val, ""); str != "" {
-				duration := parseDuration(str, time.Duration(reportInterval)*time.Second)
-				reportInterval = int64(duration.Seconds())
-			}
-		}
-		if val, ok := jsonConfig["poll_interval"]; ok {
-			if str := parseString(val, ""); str != "" {
-				duration := parseDuration(str, time.Duration(pollInterval)*time.Second)
-				pollInterval = int64(duration.Seconds())
-			}
-		}
-		if val, ok := jsonConfig["crypto_key"]; ok {
-			if str := parseString(val, ""); str != "" && cryptoKey == "" {
-				cryptoKey = str
-			}
-		}
-		if val, ok := jsonConfig["key"]; ok {
-			if str := parseString(val, ""); str != "" && key == "" {
-				key = str
-			}
-		}
-		if val, ok := jsonConfig["rate_limit"]; ok {
-			rateLimit = parseInt64(val, rateLimit)
-		}
+		applyAgentJSONConfig(jsonConfig, &address, &pollInterval, &reportInterval,
+			&key, &cryptoKey, &rateLimit, &useGRPC, &grpcAddress)
 	}
 
-	// Применяем приоритеты параметров (env vars имеют приоритет над флагами и JSON)
-	if envAddress := os.Getenv("ADDRESS"); envAddress != "" {
-		address = envAddress
-	}
-
-	pollInterval = getEnvInt64("POLL_INTERVAL", pollInterval)
-	reportInterval = getEnvInt64("REPORT_INTERVAL", reportInterval)
-
-	if envKey := os.Getenv("KEY"); envKey != "" {
-		key = envKey
-	}
-
-	if envCryptoKey := os.Getenv("CRYPTO_KEY"); envCryptoKey != "" {
-		cryptoKey = envCryptoKey
-	}
-
-	if envRateLimit := os.Getenv("RATE_LIMIT"); envRateLimit != "" {
-		if val, err := strconv.ParseInt(envRateLimit, 10, 64); err == nil {
-			rateLimit = val
-		}
-	}
+	// Применяем переменные окружения (средний приоритет)
+	applyAgentEnvVars(&address, &pollInterval, &reportInterval, &key, &cryptoKey,
+		&rateLimit, &useGRPC, &grpcAddress)
 
 	// Парсим адрес на server и port
 	server, port := parseAddress(address)
@@ -261,10 +149,12 @@ func ParseAgentFlags() models.Config {
 		Key:            key,
 		CryptoKey:      cryptoKey,
 		RateLimit:      rateLimit,
+		UseGRPC:        useGRPC,
+		GRPCAddress:    grpcAddress,
 	}
 }
 
-// loadJSONConfig загружает конфигурацию из JSON файла (внутренняя функция)
+// loadJSONConfig загружает конфигурацию из JSON файла
 func loadJSONConfig(path string) (map[string]interface{}, error) {
 	if path == "" {
 		return nil, nil
@@ -283,7 +173,202 @@ func loadJSONConfig(path string) (map[string]interface{}, error) {
 	return config, nil
 }
 
-// parseDuration парсит длительность из строки (внутренняя функция)
+// applyJSONConfig применяет значения из JSON конфига для сервера
+func applyJSONConfig(jsonConfig map[string]interface{},
+	address *string, storeInterval *int64, fileStoragePath *string,
+	restore *bool, databaseDsn *string, key *string, cryptoKey *string,
+	auditFile *string, auditURL *string, trustedSubnet *string,
+	useGRPC *bool, grpcAddress *string) {
+	if val, ok := jsonConfig["address"]; ok {
+		if str := parseString(val, ""); str != "" && *address == "localhost:8080" {
+			*address = str
+		}
+	}
+	if val, ok := jsonConfig["restore"]; ok {
+		*restore = parseBool(val, *restore)
+	}
+	if val, ok := jsonConfig["store_interval"]; ok {
+		if str := parseString(val, ""); str != "" {
+			duration := parseDuration(str, time.Duration(*storeInterval)*time.Second)
+			*storeInterval = int64(duration.Seconds())
+		}
+	}
+	if val, ok := jsonConfig["store_file"]; ok {
+		if str := parseString(val, ""); str != "" && *fileStoragePath == "" {
+			*fileStoragePath = str
+		}
+	}
+	if val, ok := jsonConfig["database_dsn"]; ok {
+		if str := parseString(val, ""); str != "" && *databaseDsn == "" {
+			*databaseDsn = str
+		}
+	}
+	if val, ok := jsonConfig["crypto_key"]; ok {
+		if str := parseString(val, ""); str != "" && *cryptoKey == "" {
+			*cryptoKey = str
+		}
+	}
+	if val, ok := jsonConfig["key"]; ok {
+		if str := parseString(val, ""); str != "" && *key == "" {
+			*key = str
+		}
+	}
+	if val, ok := jsonConfig["audit_file"]; ok {
+		if str := parseString(val, ""); str != "" && *auditFile == "" {
+			*auditFile = str
+		}
+	}
+	if val, ok := jsonConfig["audit_url"]; ok {
+		if str := parseString(val, ""); str != "" && *auditURL == "" {
+			*auditURL = str
+		}
+	}
+	if val, ok := jsonConfig["trusted_subnet"]; ok {
+		if str := parseString(val, ""); str != "" && *trustedSubnet == "" {
+			*trustedSubnet = str
+		}
+	}
+	// Новые поля для gRPC
+	if val, ok := jsonConfig["use_grpc"]; ok {
+		*useGRPC = parseBool(val, *useGRPC)
+	}
+	if val, ok := jsonConfig["grpc_address"]; ok {
+		if str := parseString(val, ""); str != "" && *grpcAddress == "localhost:3200" {
+			*grpcAddress = str
+		}
+	}
+}
+
+// applyAgentJSONConfig применяет значения из JSON конфига для агента
+func applyAgentJSONConfig(jsonConfig map[string]interface{},
+	address *string, pollInterval *int64, reportInterval *int64,
+	key *string, cryptoKey *string, rateLimit *int64,
+	useGRPC *bool, grpcAddress *string) {
+	if val, ok := jsonConfig["address"]; ok {
+		if str := parseString(val, ""); str != "" && *address == "localhost:8080" {
+			*address = str
+		}
+	}
+	if val, ok := jsonConfig["report_interval"]; ok {
+		if str := parseString(val, ""); str != "" {
+			duration := parseDuration(str, time.Duration(*reportInterval)*time.Second)
+			*reportInterval = int64(duration.Seconds())
+		}
+	}
+	if val, ok := jsonConfig["poll_interval"]; ok {
+		if str := parseString(val, ""); str != "" {
+			duration := parseDuration(str, time.Duration(*pollInterval)*time.Second)
+			*pollInterval = int64(duration.Seconds())
+		}
+	}
+	if val, ok := jsonConfig["crypto_key"]; ok {
+		if str := parseString(val, ""); str != "" && *cryptoKey == "" {
+			*cryptoKey = str
+		}
+	}
+	if val, ok := jsonConfig["key"]; ok {
+		if str := parseString(val, ""); str != "" && *key == "" {
+			*key = str
+		}
+	}
+	if val, ok := jsonConfig["rate_limit"]; ok {
+		*rateLimit = parseInt64(val, *rateLimit)
+	}
+	// Новые поля для gRPC
+	if val, ok := jsonConfig["use_grpc"]; ok {
+		*useGRPC = parseBool(val, *useGRPC)
+	}
+	if val, ok := jsonConfig["grpc_address"]; ok {
+		if str := parseString(val, ""); str != "" && *grpcAddress == "localhost:3200" {
+			*grpcAddress = str
+		}
+	}
+}
+
+// applyEnvVars применяет переменные окружения для сервера
+func applyEnvVars(address *string, storeInterval *int64, fileStoragePath *string,
+	restore *bool, databaseDsn *string, key *string, cryptoKey *string,
+	auditFile *string, auditURL *string, trustedSubnet *string,
+	useGRPC *bool, grpcAddress *string) {
+	if envAddress := os.Getenv("ADDRESS"); envAddress != "" {
+		*address = envAddress
+	}
+	if envVal := os.Getenv("STORE_INTERVAL"); envVal != "" {
+		if val, err := strconv.ParseInt(envVal, 10, 64); err == nil {
+			*storeInterval = val
+		}
+	}
+	if envVal := os.Getenv("FILE_STORAGE_PATH"); envVal != "" {
+		*fileStoragePath = envVal
+	}
+	if envVal := os.Getenv("RESTORE"); envVal != "" {
+		*restore = getEnvBool("RESTORE", *restore)
+	}
+	if envVal := os.Getenv("DATABASE_DSN"); envVal != "" {
+		*databaseDsn = envVal
+	}
+	if envVal := os.Getenv("KEY"); envVal != "" {
+		*key = envVal
+	}
+	if envVal := os.Getenv("CRYPTO_KEY"); envVal != "" {
+		*cryptoKey = envVal
+	}
+	if envVal := os.Getenv("AUDIT_FILE"); envVal != "" {
+		*auditFile = envVal
+	}
+	if envVal := os.Getenv("AUDIT_URL"); envVal != "" {
+		*auditURL = envVal
+	}
+	if envVal := os.Getenv("TRUSTED_SUBNET"); envVal != "" {
+		*trustedSubnet = envVal
+	}
+	// Новые переменные для gRPC
+	if envVal := os.Getenv("USE_GRPC"); envVal != "" {
+		*useGRPC = getEnvBool("USE_GRPC", *useGRPC)
+	}
+	if envVal := os.Getenv("GRPC_ADDRESS"); envVal != "" {
+		*grpcAddress = envVal
+	}
+}
+
+// applyAgentEnvVars применяет переменные окружения для агента
+func applyAgentEnvVars(address *string, pollInterval *int64, reportInterval *int64,
+	key *string, cryptoKey *string, rateLimit *int64,
+	useGRPC *bool, grpcAddress *string) {
+	if envAddress := os.Getenv("ADDRESS"); envAddress != "" {
+		*address = envAddress
+	}
+	if envVal := os.Getenv("POLL_INTERVAL"); envVal != "" {
+		if val, err := strconv.ParseInt(envVal, 10, 64); err == nil {
+			*pollInterval = val
+		}
+	}
+	if envVal := os.Getenv("REPORT_INTERVAL"); envVal != "" {
+		if val, err := strconv.ParseInt(envVal, 10, 64); err == nil {
+			*reportInterval = val
+		}
+	}
+	if envVal := os.Getenv("KEY"); envVal != "" {
+		*key = envVal
+	}
+	if envVal := os.Getenv("CRYPTO_KEY"); envVal != "" {
+		*cryptoKey = envVal
+	}
+	if envVal := os.Getenv("RATE_LIMIT"); envVal != "" {
+		if val, err := strconv.ParseInt(envVal, 10, 64); err == nil {
+			*rateLimit = val
+		}
+	}
+	// Новые переменные для gRPC
+	if envVal := os.Getenv("USE_GRPC"); envVal != "" {
+		*useGRPC = getEnvBool("USE_GRPC", *useGRPC)
+	}
+	if envVal := os.Getenv("GRPC_ADDRESS"); envVal != "" {
+		*grpcAddress = envVal
+	}
+}
+
+// parseDuration парсит длительность из строки
 func parseDuration(s string, defaultVal time.Duration) time.Duration {
 	if s == "" {
 		return defaultVal
@@ -295,7 +380,7 @@ func parseDuration(s string, defaultVal time.Duration) time.Duration {
 	return d
 }
 
-// parseInt64 парсит int64 из интерфейса (внутренняя функция)
+// parseInt64 парсит int64 из интерфейса
 func parseInt64(v interface{}, defaultVal int64) int64 {
 	if v == nil {
 		return defaultVal
@@ -312,7 +397,7 @@ func parseInt64(v interface{}, defaultVal int64) int64 {
 	}
 }
 
-// parseBool парсит bool из интерфейса (внутренняя функция)
+// parseBool парсит bool из интерфейса
 func parseBool(v interface{}, defaultVal bool) bool {
 	if v == nil {
 		return defaultVal
@@ -333,7 +418,7 @@ func parseBool(v interface{}, defaultVal bool) bool {
 	return defaultVal
 }
 
-// parseString парсит строку из интерфейса (внутренняя функция)
+// parseString парсит строку из интерфейса
 func parseString(v interface{}, defaultVal string) string {
 	if v == nil {
 		return defaultVal
@@ -349,16 +434,6 @@ func getEnvBool(key string, defaultVal bool) bool {
 	if value, exists := os.LookupEnv(key); exists {
 		if boolVal, err := strconv.ParseBool(value); err == nil {
 			return boolVal
-		}
-	}
-	return defaultVal
-}
-
-// getEnvInt64 получает значение int64 из переменной окружения
-func getEnvInt64(key string, defaultVal int64) int64 {
-	if value, exists := os.LookupEnv(key); exists {
-		if intVal, err := strconv.ParseInt(value, 10, 64); err == nil {
-			return intVal
 		}
 	}
 	return defaultVal
